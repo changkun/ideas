@@ -1,0 +1,191 @@
+// Copyright 2025 Changkun Ou. All rights reserved.
+// Use of this source code is governed by a MIT
+// license that can be found in the LICENSE file.
+
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+	"unicode"
+)
+
+type service struct {
+	log      *log.Logger
+	token    string
+	llm    *llmClient
+	github *githubClient
+}
+
+type ideaRequest struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+type ideaResponse struct {
+	OK       bool   `json:"ok"`
+	Message  string `json:"message,omitempty"`
+	Filename string `json:"filename,omitempty"`
+}
+
+func (s *service) handlePost(w http.ResponseWriter, r *http.Request) {
+	var req ideaRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Content == "" {
+		s.jsonError(w, "content is required", http.StatusBadRequest)
+		return
+	}
+
+	// Fetch linked content if the idea contains URLs.
+	enriched := req.Content
+	if urls := extractURLs(req.Content); len(urls) > 0 {
+		for _, u := range urls {
+			s.log.Printf("fetching linked content: %s", u)
+			text, err := fetchURL(r.Context(), u)
+			if err != nil {
+				s.log.Printf("failed to fetch %s: %v", u, err)
+				continue
+			}
+			enriched += fmt.Sprintf("\n\n--- Linked content from %s ---\n%s", u, text)
+		}
+	}
+
+	if req.Title == "" {
+		s.log.Printf("generating title for idea...")
+		title, err := s.llm.generateTitle(r.Context(), enriched)
+		if err != nil {
+			s.log.Printf("title generation failed: %v", err)
+			req.Title = "Untitled"
+		} else {
+			req.Title = title
+		}
+		s.log.Printf("generated title: %s", req.Title)
+	}
+
+	now := time.Now()
+	slug := slugify(req.Title)
+	filename := fmt.Sprintf("%s-%s.md", now.Format("2006-01-02"), slug)
+
+	s.log.Printf("augmenting idea: %s", req.Title)
+	augmented, err := s.llm.augment(r.Context(), req.Title, enriched)
+	if err != nil {
+		s.log.Printf("LLM augmentation failed: %v", err)
+		augmented = ""
+	}
+
+	md := buildMarkdown(now, req.Title, req.Content, augmented)
+
+	filePath := "content/ideas/" + filename
+	commitMsg := sanitizeCommitMsg(fmt.Sprintf("ideas: %s", req.Title))
+	if err := s.github.createFile(r.Context(), filePath, md, commitMsg); err != nil {
+		s.log.Printf("GitHub commit failed: %v", err)
+		s.jsonError(w, "failed to publish idea", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ideaResponse{
+		OK:       true,
+		Message:  "idea published",
+		Filename: filename,
+	})
+}
+
+func buildMarkdown(date time.Time, title, original, augmented string) string {
+	var b strings.Builder
+	b.WriteString("---\n")
+	b.WriteString(fmt.Sprintf("date: %s\n", date.Format("2006-01-02")))
+	b.WriteString(fmt.Sprintf("title: %q\n", title))
+	b.WriteString("---\n\n")
+	b.WriteString(original)
+
+	if augmented != "" {
+		b.WriteString("\n\n{{< augmented >}}\n")
+		b.WriteString(augmented)
+		b.WriteString("\n{{< /augmented >}}\n")
+	}
+
+	return b.String()
+}
+
+var nonAlphanumRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+func slugify(s string) string {
+	s = strings.ToLower(s)
+	var ascii strings.Builder
+	for _, r := range s {
+		if r <= unicode.MaxASCII {
+			ascii.WriteRune(r)
+		}
+	}
+	s = nonAlphanumRe.ReplaceAllString(ascii.String(), "-")
+	s = strings.Trim(s, "-")
+	if s == "" {
+		s = "idea"
+	}
+	return s
+}
+
+var urlRe = regexp.MustCompile(`https?://[^\s<>"{}|\\^` + "`" + `\[\]]+`)
+
+func extractURLs(s string) []string {
+	matches := urlRe.FindAllString(s, 5) // limit to 5 URLs
+	return matches
+}
+
+func fetchURL(ctx context.Context, url string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "ChangkunIdeasBot/1.0")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32*1024)) // 32KB max
+	if err != nil {
+		return "", err
+	}
+
+	// Strip HTML tags for a rough plain-text extraction.
+	text := stripHTMLTags(string(body))
+	// Collapse whitespace.
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > 4096 {
+		text = text[:4096]
+	}
+	return text, nil
+}
+
+var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
+
+func stripHTMLTags(s string) string {
+	return htmlTagRe.ReplaceAllString(s, " ")
+}
+
+func (s *service) jsonError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(ideaResponse{OK: false, Message: msg})
+}

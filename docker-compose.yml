@@ -10,14 +10,10 @@ services:
     image: ideas:latest
     deploy:
       replicas: 1
+    env_file:
+      - .env
     environment:
       IDEAS_ADDR: ideas:80
-      IDEAS_TOKEN: ${IDEAS_TOKEN}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      IDEAS_BLOG_PATH: /blog
-    volumes:
-      - .:/blog
-      - ~/.ssh:/root/.ssh:ro
     logging:
       driver: json-file
       options:

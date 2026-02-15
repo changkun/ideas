@@ -3,7 +3,7 @@
 # license that can be found in the LICENSE file.
 
 FROM alpine
-RUN apk add --no-cache git openssh
+RUN apk add --no-cache ca-certificates
 COPY ideas /app/ideas
 EXPOSE 80
 CMD ["/app/ideas"]
