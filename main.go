@@ -1,0 +1,89 @@
+// Copyright 2025 Changkun Ou. All rights reserved.
+// Use of this source code is governed by a MIT
+// license that can be found in the LICENSE file.
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"time"
+)
+
+func main() {
+	l := log.New(os.Stdout, "ideas: ", log.LstdFlags|log.Lshortfile|log.Lmsgprefix)
+
+	r := http.NewServeMux()
+	r.HandleFunc("GET /ideas/ping", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "pong")
+	})
+
+	addr := os.Getenv("IDEAS_ADDR")
+	if addr == "" {
+		addr = "0.0.0.0:80"
+	}
+	s := &http.Server{
+		Addr:         addr,
+		Handler:      logging(l)(r),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: time.Minute,
+		IdleTimeout:  time.Minute,
+	}
+
+	done := make(chan bool)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt)
+
+	go func() {
+		<-quit
+		l.Println("ideas service is shutting down...")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		s.SetKeepAlivesEnabled(false)
+		if err := s.Shutdown(ctx); err != nil {
+			l.Fatalf("cannot gracefully shutdown: %v", err)
+		}
+		close(done)
+	}()
+
+	l.Printf("ideas service is serving on %s...", addr)
+	if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		l.Fatalf("cannot listen on %s, err: %v\n", addr, err)
+	}
+
+	l.Println("goodbye!")
+	<-done
+}
+
+func logging(logger *log.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				logger.Println(readIP(r), r.Method, r.URL.Path)
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func readIP(r *http.Request) string {
+	clientIP := r.Header.Get("X-Forwarded-For")
+	clientIP = strings.TrimSpace(strings.Split(clientIP, ",")[0])
+	if clientIP == "" {
+		clientIP = strings.TrimSpace(r.Header.Get("X-Real-Ip"))
+	}
+	if clientIP != "" {
+		return clientIP
+	}
+	ip, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err != nil {
+		return "unknown"
+	}
+	return ip
+}
