@@ -25,8 +25,9 @@ type service struct {
 }
 
 type ideaRequest struct {
-	Title   string `json:"title"`
-	Content string `json:"content"`
+	Title     string `json:"title"`
+	Content   string `json:"content"`
+	Augmented string `json:"augmented"`
 }
 
 type ideaResponse struct {
@@ -90,11 +91,17 @@ func (s *service) processIdea(req ideaRequest) {
 	slug := slugify(req.Title)
 	filename := fmt.Sprintf("%s-%s.md", now.Format("2006-01-02"), slug)
 
-	s.log.Printf("augmenting idea: %s", req.Title)
-	augmented, err := s.llm.augment(ctx, req.Title, enriched)
-	if err != nil {
-		s.log.Printf("LLM augmentation failed, publishing without augmentation: %v", err)
-		augmented = ""
+	augmented := req.Augmented
+	if augmented == "" {
+		s.log.Printf("augmenting idea: %s", req.Title)
+		var err error
+		augmented, err = s.llm.augment(ctx, req.Title, enriched)
+		if err != nil {
+			s.log.Printf("LLM augmentation failed, publishing without augmentation: %v", err)
+			augmented = ""
+		}
+	} else {
+		s.log.Printf("using provided augmented content for: %s", req.Title)
 	}
 
 	md := buildMarkdown(now, req.Title, req.Content, augmented)
