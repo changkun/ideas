@@ -76,6 +76,19 @@ func (c *llmClient) generateTitle(ctx context.Context, content string) (string, 
 	return c.complete(ctx, c.titleModel, titlePrompt, content)
 }
 
+const improvePrompt = `Fix typos, spelling errors, and grammatical mistakes in the following text.
+Improve readability and sentence flow where needed.
+Preserve the original meaning and tone precisely.
+Return only the improved text, no commentary or explanation.
+Use the same language as the input.`
+
+func (c *llmClient) improveContent(ctx context.Context, content string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	return c.complete(ctx, c.titleModel, improvePrompt, content)
+}
+
 func (c *llmClient) complete(ctx context.Context, model, system, user string) (string, error) {
 	reqBody := chatRequest{
 		Model: model,

@@ -33,6 +33,7 @@ type ideaRequest struct {
 type ideaResponse struct {
 	OK       bool   `json:"ok"`
 	Message  string `json:"message,omitempty"`
+	Content  string `json:"content,omitempty"`
 	Filename string `json:"filename,omitempty"`
 }
 
@@ -55,6 +56,28 @@ func (s *service) handlePost(w http.ResponseWriter, r *http.Request) {
 		OK:      true,
 		Message: "idea accepted, publishing in background",
 	})
+}
+
+func (s *service) handleImprove(w http.ResponseWriter, r *http.Request) {
+	var req ideaRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Content == "" {
+		s.jsonError(w, "content is required", http.StatusBadRequest)
+		return
+	}
+
+	improved, err := s.llm.improveContent(r.Context(), req.Content)
+	if err != nil {
+		s.log.Printf("content improvement failed: %v", err)
+		s.jsonError(w, "content improvement failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ideaResponse{OK: true, Content: improved})
 }
 
 func (s *service) processIdea(req ideaRequest) {

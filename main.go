@@ -66,6 +66,7 @@ func main() {
 		fmt.Fprintln(w, "pong")
 	})
 	r.HandleFunc("POST /ideas/post", svc.handlePost)
+	r.HandleFunc("POST /ideas/improve", svc.handleImprove)
 
 	addr := cmp.Or(os.Getenv("IDEAS_ADDR"), "0.0.0.0:80")
 	s := &http.Server{
