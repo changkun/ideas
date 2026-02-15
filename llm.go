@@ -51,7 +51,7 @@ Structure your response as:
 
 **Context** — Situate the idea: what field does it touch, why does it matter now, what problem or tension does it address?
 
-**Key Insights** — 2-3 concise points that deepen the idea with relevant research, counterarguments, or connections to adjacent domains. Cite specific works, papers, or thinkers where possible.
+**Key Insights** — 2-3 concise points that deepen the idea with relevant research, counterarguments, or connections to adjacent domains. Every factual claim must include a citation as a markdown link to the original source (e.g. [Author, Title](https://...)). When linked content is provided below the idea, prefer citing those URLs directly. For other references, link to the canonical source (paper DOI, official page, or repository). Do not fabricate URLs — if you cannot provide a real link, name the work and author without a link.
 
 **Open Questions** — 1-2 provocative questions that extend the idea further, suggesting unexplored directions worth revisiting.
 
