@@ -111,7 +111,7 @@ func (s *service) processIdea(req ideaRequest) {
 func buildMarkdown(date time.Time, title, original, augmented string) string {
 	var b strings.Builder
 	b.WriteString("---\n")
-	b.WriteString(fmt.Sprintf("date: %s\n", date.Format("2006-01-02")))
+	b.WriteString(fmt.Sprintf("date: %s\n", date.Format("2006-01-02T15:04:05")))
 	b.WriteString(fmt.Sprintf("title: %q\n", title))
 	b.WriteString("---\n\n")
 	b.WriteString(original)
