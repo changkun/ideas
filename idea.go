@@ -138,9 +138,15 @@ func (s *service) processIdea(req ideaRequest) {
 	}
 	s.log.Printf("detected language: %s", lang)
 
-	// Use English title for slug/filename.
+	// Generate short slug via LLM, fall back to mechanical slugify.
 	now := time.Now()
-	slug := slugify(titleEn)
+	s.log.Printf("generating short slug...")
+	slug, err := s.llm.generateSlug(ctx, titleEn)
+	if err != nil {
+		s.log.Printf("LLM slug generation failed, using fallback: %v", err)
+		slug = slugify(titleEn)
+	}
+	s.log.Printf("slug: %s", slug)
 	filename := fmt.Sprintf("%s-%s.md", now.Format("2006-01-02"), slug)
 
 	// Augment in original language.
@@ -184,6 +190,7 @@ func (s *service) processIdea(req ideaRequest) {
 	llmGenerated := req.Augmented == "" && augmented != ""
 	md := buildMarkdown(bilingualContent{
 		date:         now,
+		slug:         slug,
 		titleEn:      titleEn,
 		titleZh:      titleZh,
 		contentEn:    contentEn,
@@ -204,6 +211,7 @@ func (s *service) processIdea(req ideaRequest) {
 
 type bilingualContent struct {
 	date         time.Time
+	slug         string
 	titleEn      string
 	titleZh      string
 	contentEn    string
@@ -217,6 +225,7 @@ func buildMarkdown(c bilingualContent) string {
 	var b strings.Builder
 	b.WriteString("---\n")
 	b.WriteString(fmt.Sprintf("date: %s\n", c.date.Format("2006-01-02T15:04:05")))
+	b.WriteString(fmt.Sprintf("slug: %q\n", c.slug))
 	b.WriteString(fmt.Sprintf("title: %q\n", c.titleEn))
 	b.WriteString(fmt.Sprintf("title_zh: %q\n", c.titleZh))
 	b.WriteString("---\n\n")

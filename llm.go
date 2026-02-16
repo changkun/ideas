@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -130,6 +131,37 @@ func (c *llmClient) detectAndTranslate(ctx context.Context, title, content strin
 		return nil, fmt.Errorf("unexpected language: %q", result.Lang)
 	}
 	return &result, nil
+}
+
+const slugPrompt = `Generate a short URL slug (2-3 words, hyphenated) for the given title.
+The slug should capture the core concept concisely.
+Use only lowercase ASCII letters and hyphens.
+Reply with ONLY the slug, nothing else.
+
+Examples:
+- "Expertise as Risk Control in Human-AI Optimization" → expertise-risk-control
+- "Reward Hacking Triggers Emergent Misalignment Through Self-Concept Shifts" → reward-hacking
+- "LLMs Eliminate Implementation Bottlenecks Elevating Architectural Judgment" → llms-bottlenecks
+- "PBO Preferential Bayesian Optimization Methods" → pbo-methods
+- "Language-Centric AI While Human Cognition Shifts Toward Visual-Spatial Thinking" → language-vs-visual-ai`
+
+func (c *llmClient) generateSlug(ctx context.Context, titleEn string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	raw, err := c.complete(ctx, c.titleModel, slugPrompt, titleEn)
+	if err != nil {
+		return "", err
+	}
+
+	// Sanitize: lowercase, trim, remove anything that's not a-z0-9 or hyphen.
+	slug := strings.ToLower(strings.TrimSpace(raw))
+	slug = regexp.MustCompile(`[^a-z0-9-]+`).ReplaceAllString(slug, "")
+	slug = strings.Trim(slug, "-")
+	if slug == "" {
+		return "", fmt.Errorf("empty slug generated")
+	}
+	return slug, nil
 }
 
 const translateContentPrompt = `Translate the following text to %s.
