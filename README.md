@@ -1,6 +1,6 @@
 # ideas
 
-A service for capturing and publishing bilingual (EN/ZH) idea posts to [changkun.de/blog/ideas](https://changkun.de/blog/ideas). It polishes, translates, and augments raw ideas using LLMs, then commits the result as markdown to GitHub.
+A service for capturing and publishing bilingual (EN/ZH) idea posts to [changkun.de/ideas](https://changkun.de/ideas). It polishes, translates, and augments raw ideas using LLMs, then commits the result as markdown to GitHub.
 
 ## Architecture
 
