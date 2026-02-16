@@ -26,14 +26,29 @@ func main() {
 	if url == "" {
 		url = "https://api.changkun.de"
 	}
-	token := os.Getenv("IDEAS_TOKEN")
-	if token == "" {
-		fmt.Fprintln(os.Stderr, "IDEAS_TOKEN is required")
+	loginURL := os.Getenv("LOGIN_URL")
+	if loginURL == "" {
+		loginURL = "https://login.changkun.de"
+	}
+	loginUser := os.Getenv("LOGIN_USER")
+	if loginUser == "" {
+		fmt.Fprintln(os.Stderr, "LOGIN_USER is required")
+		os.Exit(1)
+	}
+	loginPass := os.Getenv("LOGIN_PASS")
+	if loginPass == "" {
+		fmt.Fprintln(os.Stderr, "LOGIN_PASS is required")
+		os.Exit(1)
+	}
+
+	// Obtain JWT from login service.
+	token, err := login(loginURL, loginUser, loginPass)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "login failed: %v\n", err)
 		os.Exit(1)
 	}
 
 	var content string
-	var err error
 
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		fmt.Println("idea (Alt+Enter or Ctrl+J for newline, Enter to send)")
@@ -88,6 +103,33 @@ func main() {
 		fmt.Fprintf(os.Stderr, "failed: %s\n", result.Message)
 		os.Exit(1)
 	}
+}
+
+func login(loginURL, user, pass string) (string, error) {
+	body, _ := json.Marshal(map[string]string{
+		"username": user,
+		"password": pass,
+	})
+	resp, err := http.Post(strings.TrimRight(loginURL, "/")+"/auth", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("login returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+	if result.Token == "" {
+		return "", fmt.Errorf("empty token in response")
+	}
+	return result.Token, nil
 }
 
 const (

@@ -18,8 +18,7 @@ import (
 )
 
 type service struct {
-	log      *log.Logger
-	token    string
+	log    *log.Logger
 	llm    *llmClient
 	github *githubClient
 }

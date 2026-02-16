@@ -5,8 +5,10 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -20,10 +22,8 @@ import (
 func main() {
 	l := log.New(os.Stdout, "ideas: ", log.LstdFlags|log.Lshortfile|log.Lmsgprefix)
 
-	token := os.Getenv("IDEAS_TOKEN")
-	if token == "" {
-		l.Fatal("IDEAS_TOKEN is required")
-	}
+	loginVerifyURL := cmp.Or(os.Getenv("LOGIN_VERIFY_URL"), "https://login.changkun.de/verify")
+
 	llmBaseURL := os.Getenv("LLM_BASE_URL")
 	if llmBaseURL == "" {
 		l.Fatal("LLM_BASE_URL is required")
@@ -44,8 +44,7 @@ func main() {
 	}
 
 	svc := &service{
-		log:   l,
-		token: token,
+		log: l,
 		llm: &llmClient{
 			baseURL:    llmBaseURL,
 			apiKey:     llmAPIKey,
@@ -71,7 +70,7 @@ func main() {
 	addr := cmp.Or(os.Getenv("IDEAS_ADDR"), "0.0.0.0:80")
 	s := &http.Server{
 		Addr:         addr,
-		Handler:      logging(l)(auth(token)(r)),
+		Handler:      logging(l)(auth(loginVerifyURL)(r)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 2 * time.Minute,
 		IdleTimeout:  time.Minute,
@@ -102,7 +101,7 @@ func main() {
 	<-done
 }
 
-func auth(token string) func(http.Handler) http.Handler {
+func auth(loginVerifyURL string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/ideas/ping" {
@@ -110,10 +109,20 @@ func auth(token string) func(http.Handler) http.Handler {
 				return
 			}
 			h := r.Header.Get("Authorization")
-			if !strings.HasPrefix(h, "Bearer ") || strings.TrimPrefix(h, "Bearer ") != token {
+			if !strings.HasPrefix(h, "Bearer ") {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
+			token := strings.TrimPrefix(h, "Bearer ")
+
+			body, _ := json.Marshal(map[string]string{"token": token})
+			resp, err := http.Post(loginVerifyURL, "application/json", bytes.NewReader(body))
+			if err != nil || resp.StatusCode != http.StatusOK {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			resp.Body.Close()
+
 			next.ServeHTTP(w, r)
 		})
 	}
