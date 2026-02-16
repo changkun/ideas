@@ -72,7 +72,7 @@ func main() {
 	addr := cmp.Or(os.Getenv("IDEAS_ADDR"), "0.0.0.0:80")
 	s := &http.Server{
 		Addr:         addr,
-		Handler:      logging(l)(auth(r)),
+		Handler:      logging(l)(cors(auth(r))),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 2 * time.Minute,
 		IdleTimeout:  time.Minute,
@@ -101,6 +101,26 @@ func main() {
 
 	l.Println("goodbye!")
 	<-done
+}
+
+func cors(next http.Handler) http.Handler {
+	allowed := map[string]bool{
+		"https://changkun.de":     true,
+		"https://www.changkun.de": true,
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if allowed[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func auth(next http.Handler) http.Handler {
