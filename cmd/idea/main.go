@@ -15,6 +15,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"changkun.de/x/login"
 	"golang.org/x/term"
 )
 
@@ -26,9 +27,8 @@ func main() {
 	if url == "" {
 		url = "https://api.changkun.de"
 	}
-	loginURL := os.Getenv("LOGIN_URL")
-	if loginURL == "" {
-		loginURL = "https://login.changkun.de"
+	if v := os.Getenv("LOGIN_URL"); v != "" {
+		login.AuthEndpoint = strings.TrimRight(v, "/") + "/auth"
 	}
 	loginUser := os.Getenv("LOGIN_USER")
 	if loginUser == "" {
@@ -42,7 +42,7 @@ func main() {
 	}
 
 	// Obtain JWT from login service.
-	token, err := login(loginURL, loginUser, loginPass)
+	token, err := login.RequestToken(loginUser, loginPass)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "login failed: %v\n", err)
 		os.Exit(1)
@@ -103,33 +103,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "failed: %s\n", result.Message)
 		os.Exit(1)
 	}
-}
-
-func login(loginURL, user, pass string) (string, error) {
-	body, _ := json.Marshal(map[string]string{
-		"username": user,
-		"password": pass,
-	})
-	resp, err := http.Post(strings.TrimRight(loginURL, "/")+"/auth", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("login returned status %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Token string `json:"token"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
-	}
-	if result.Token == "" {
-		return "", fmt.Errorf("empty token in response")
-	}
-	return result.Token, nil
 }
 
 const (
