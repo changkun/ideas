@@ -6,4 +6,9 @@ toolchain go1.24.1
 
 require golang.org/x/term v0.40.0
 
-require golang.org/x/sys v0.41.0 // indirect
+require (
+	changkun.de/x/login v0.0.1
+	golang.org/x/sys v0.41.0 // indirect
+)
+
+replace changkun.de/x/login => ../login

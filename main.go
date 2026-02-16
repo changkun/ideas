@@ -5,10 +5,8 @@
 package main
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -17,12 +15,16 @@ import (
 	"os/signal"
 	"strings"
 	"time"
+
+	"changkun.de/x/login"
 )
 
 func main() {
 	l := log.New(os.Stdout, "ideas: ", log.LstdFlags|log.Lshortfile|log.Lmsgprefix)
 
-	loginVerifyURL := cmp.Or(os.Getenv("LOGIN_VERIFY_URL"), "https://login.changkun.de/verify")
+	if v := os.Getenv("LOGIN_VERIFY_URL"); v != "" {
+		login.VerifyEndpoint = v
+	}
 
 	llmBaseURL := os.Getenv("LLM_BASE_URL")
 	if llmBaseURL == "" {
@@ -70,7 +72,7 @@ func main() {
 	addr := cmp.Or(os.Getenv("IDEAS_ADDR"), "0.0.0.0:80")
 	s := &http.Server{
 		Addr:         addr,
-		Handler:      logging(l)(auth(loginVerifyURL)(r)),
+		Handler:      logging(l)(auth(r)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 2 * time.Minute,
 		IdleTimeout:  time.Minute,
@@ -101,31 +103,30 @@ func main() {
 	<-done
 }
 
-func auth(loginVerifyURL string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/ideas/ping" {
+func auth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ideas/ping" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Try Bearer token from Authorization header.
+		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+			token := strings.TrimPrefix(h, "Bearer ")
+			if _, err := login.Verify(token); err == nil {
 				next.ServeHTTP(w, r)
 				return
 			}
-			h := r.Header.Get("Authorization")
-			if !strings.HasPrefix(h, "Bearer ") {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			token := strings.TrimPrefix(h, "Bearer ")
+		}
 
-			body, _ := json.Marshal(map[string]string{"token": token})
-			resp, err := http.Post(loginVerifyURL, "application/json", bytes.NewReader(body))
-			if err != nil || resp.StatusCode != http.StatusOK {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			resp.Body.Close()
-
+		// Fall back to query param / cookie via SDK.
+		if _, err := login.HandleAuth(w, r); err == nil {
 			next.ServeHTTP(w, r)
-		})
-	}
+			return
+		}
+
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	})
 }
 
 func logging(logger *log.Logger) func(http.Handler) http.Handler {
