@@ -89,6 +89,65 @@ func (c *llmClient) improveContent(ctx context.Context, content string) (string,
 	return c.complete(ctx, c.titleModel, improvePrompt, content)
 }
 
+const detectAndTranslatePrompt = `You will be given a title and content. Do the following:
+1. Detect whether the text is primarily English or Chinese.
+2. Polish the original title and content: fix typos, spelling errors, and grammatical mistakes; improve readability and sentence flow; keep it concise and preserve the original thought structure and tone exactly.
+3. Translate the polished title and content to the other language (English→Chinese or Chinese→English). Preserve meaning, tone, and markdown formatting exactly.
+
+Reply with ONLY a JSON object in this exact format, no other text:
+{"lang":"en or zh","polished_title":"...","polished_content":"...","translated_title":"...","translated_content":"..."}`
+
+type translateResult struct {
+	Lang              string `json:"lang"`
+	PolishedTitle     string `json:"polished_title"`
+	PolishedContent   string `json:"polished_content"`
+	TranslatedTitle   string `json:"translated_title"`
+	TranslatedContent string `json:"translated_content"`
+}
+
+func (c *llmClient) detectAndTranslate(ctx context.Context, title, content string) (*translateResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	prompt := fmt.Sprintf("Title: %s\n\nContent:\n%s", title, content)
+	raw, err := c.complete(ctx, c.titleModel, detectAndTranslatePrompt, prompt)
+	if err != nil {
+		return nil, err
+	}
+
+	// Strip markdown code fences if present.
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+
+	var result translateResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return nil, fmt.Errorf("parse translation response: %w (raw: %s)", err, raw)
+	}
+	if result.Lang != "en" && result.Lang != "zh" {
+		return nil, fmt.Errorf("unexpected language: %q", result.Lang)
+	}
+	return &result, nil
+}
+
+const translateContentPrompt = `Translate the following text to %s.
+Preserve the original meaning, tone, and markdown formatting exactly.
+Return only the translated text, no commentary or explanation.`
+
+func (c *llmClient) translateContent(ctx context.Context, content, targetLang string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	langName := "English"
+	if targetLang == "zh" {
+		langName = "Chinese"
+	}
+	prompt := fmt.Sprintf(translateContentPrompt, langName)
+	return c.complete(ctx, c.titleModel, prompt, content)
+}
+
 func (c *llmClient) complete(ctx context.Context, model, system, user string) (string, error) {
 	reqBody := chatRequest{
 		Model: model,
