@@ -36,7 +36,7 @@ func main() {
 	var err error
 
 	if term.IsTerminal(int(os.Stdin.Fd())) {
-		fmt.Println("idea (Shift+Enter or Alt+Enter for newline, Enter to send)")
+		fmt.Println("idea (Alt+Enter or Ctrl+J for newline, Enter to send)")
 		content, err = readInput()
 		if err != nil {
 			if err.Error() == "interrupted" {
@@ -214,7 +214,13 @@ func readInput() (string, error) {
 				}
 				displayLines = redraw(buf, displayLines)
 
-			case ch == '\r' || ch == '\n':
+			case ch == '\n': // Ctrl+J: newline
+				pending = pending[1:]
+				buf = append(buf, '\n')
+				displayLines++
+				write("\r\n" + contPrompt)
+
+			case ch == '\r': // Enter: submit (or newline in paste mode)
 				pending = pending[1:]
 				if inPaste {
 					buf = append(buf, '\n')
