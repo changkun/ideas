@@ -116,12 +116,35 @@ func (s *service) processIdea(req ideaRequest) {
 	var lang string
 	var titleEn, titleZh, contentEn, contentZh string
 	if err != nil {
-		s.log.Printf("detect+translate failed, falling back to original only: %v", err)
-		lang = "en"
-		titleEn = req.Title
-		titleZh = req.Title
-		contentEn = req.Content
-		contentZh = req.Content
+		s.log.Printf("detect+translate failed, falling back to separate translation: %v", err)
+		lang = detectLang(req.Content)
+		if lang == "en" {
+			titleEn = req.Title
+			contentEn = req.Content
+			titleZh, err = s.llm.translateContent(ctx, req.Title, "zh")
+			if err != nil {
+				s.log.Printf("title translation fallback failed: %v", err)
+				titleZh = req.Title
+			}
+			contentZh, err = s.llm.translateContent(ctx, req.Content, "zh")
+			if err != nil {
+				s.log.Printf("content translation fallback failed: %v", err)
+				contentZh = req.Content
+			}
+		} else {
+			titleZh = req.Title
+			contentZh = req.Content
+			titleEn, err = s.llm.translateContent(ctx, req.Title, "en")
+			if err != nil {
+				s.log.Printf("title translation fallback failed: %v", err)
+				titleEn = req.Title
+			}
+			contentEn, err = s.llm.translateContent(ctx, req.Content, "en")
+			if err != nil {
+				s.log.Printf("content translation fallback failed: %v", err)
+				contentEn = req.Content
+			}
+		}
 	} else {
 		lang = tr.Lang
 		if lang == "en" {
@@ -257,6 +280,25 @@ func buildMarkdown(c bilingualContent) string {
 	b.WriteString("{{% /zh %}}\n")
 
 	return b.String()
+}
+
+// detectLang guesses whether text is primarily Chinese or English
+// by checking if more than half the non-space runes are CJK.
+func detectLang(s string) string {
+	var cjk, total int
+	for _, r := range s {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) {
+			continue
+		}
+		total++
+		if unicode.Is(unicode.Han, r) {
+			cjk++
+		}
+	}
+	if total > 0 && cjk*2 > total {
+		return "zh"
+	}
+	return "en"
 }
 
 var nonAlphanumRe = regexp.MustCompile(`[^a-z0-9]+`)
