@@ -125,7 +125,12 @@ func (c *llmClient) detectAndTranslate(ctx context.Context, title, content strin
 
 	var result translateResult
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return nil, fmt.Errorf("parse translation response: %w (raw: %s)", err, raw)
+		// LLMs sometimes produce JSON with unescaped control characters
+		// inside string values. Try to repair before giving up.
+		repaired := repairJSON(raw)
+		if err2 := json.Unmarshal([]byte(repaired), &result); err2 != nil {
+			return nil, fmt.Errorf("parse translation response: %w (raw: %s)", err, raw)
+		}
 	}
 	if result.Lang != "en" && result.Lang != "zh" {
 		return nil, fmt.Errorf("unexpected language: %q", result.Lang)
@@ -231,4 +236,44 @@ func (c *llmClient) complete(ctx context.Context, model, system, user string) (s
 	}
 
 	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+}
+
+// repairJSON escapes unescaped control characters (newlines, tabs, etc.)
+// inside JSON string values. LLMs sometimes produce pretty-printed JSON
+// with literal newlines in string content instead of \n escape sequences.
+func repairJSON(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch c {
+			case '"':
+				inString = false
+				b.WriteByte(c)
+			case '\\':
+				// Keep existing escape sequences as-is.
+				b.WriteByte(c)
+				if i+1 < len(s) {
+					i++
+					b.WriteByte(s[i])
+				}
+			case '\n':
+				b.WriteString(`\n`)
+			case '\r':
+				b.WriteString(`\r`)
+			case '\t':
+				b.WriteString(`\t`)
+			default:
+				b.WriteByte(c)
+			}
+		} else {
+			if c == '"' {
+				inString = true
+			}
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
