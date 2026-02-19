@@ -60,7 +60,7 @@ type completionOptions struct {
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
 	Error *struct {
@@ -68,9 +68,14 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
+type contentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
 const augmentSystemPrompt = `You are a personal intellectual companion augmenting ideas for a researcher's blog. When given a raw idea or note, produce a structured deep dive that makes the idea more valuable for future retrieval and exploration.
 
-Write in the same language as the original content. Do not repeat the original content.
+Write in the same language as the original content. IMPORTANT: preserve every specific claim, reference, URL, name, number, and technical detail from the original. Do not omit or summarize away any concrete information — your job is to ADD context, not replace what is already there.
 
 You have access to web search and web fetch tools. USE THEM ACTIVELY:
 - Search for recent papers, articles, and authoritative sources that relate to the idea.
@@ -80,27 +85,27 @@ You have access to web search and web fetch tools. USE THEM ACTIVELY:
 
 Structure your response as:
 
-**Context** — Situate the idea: what field does it touch, why does it matter now, what problem or tension does it address?
+**Context** — Situate the idea: what field does it touch, why does it matter now, what problem or tension does it address? Incorporate the original's key points and terminology.
 
-**Key Insights** — 2-3 concise points that deepen the idea with relevant research, counterarguments, or connections to adjacent domains. Every factual claim must include a citation as a markdown link to the original source (e.g. [Author, Title](https://...)). When linked content is provided below the idea, prefer citing those URLs directly. For other references, search for and verify the canonical source (paper DOI, official page, or repository) before linking. Do not fabricate URLs — if you cannot provide a real link, name the work and author without a link.
+**Key Insights** — Deepen the idea with relevant research, counterarguments, or connections to adjacent domains. Cover ALL distinct points from the original — do not limit yourself to a fixed number. Every factual claim must include a citation as a markdown link to the original source (e.g. [Author, Title](https://...)). When linked content is provided below the idea, prefer citing those URLs directly. For other references, search for and verify the canonical source (paper DOI, official page, or repository) before linking. Do not fabricate URLs — if you cannot provide a real link, name the work and author without a link.
 
 **Open Questions** — 1-2 provocative questions that extend the idea further, suggesting unexplored directions worth revisiting.
 
-Keep the total response under 400 words. Be precise, not verbose. Prefer substance over filler. Use markdown formatting.`
+Be precise, not verbose. Prefer substance over filler. Use markdown formatting.`
 
 const augmentSystemPromptPlain = `You are a personal intellectual companion augmenting ideas for a researcher's blog. When given a raw idea or note, produce a structured deep dive that makes the idea more valuable for future retrieval and exploration.
 
-Write in the same language as the original content. Do not repeat the original content.
+Write in the same language as the original content. IMPORTANT: preserve every specific claim, reference, URL, name, number, and technical detail from the original. Do not omit or summarize away any concrete information — your job is to ADD context, not replace what is already there.
 
 Structure your response as:
 
-**Context** — Situate the idea: what field does it touch, why does it matter now, what problem or tension does it address?
+**Context** — Situate the idea: what field does it touch, why does it matter now, what problem or tension does it address? Incorporate the original's key points and terminology.
 
-**Key Insights** — 2-3 concise points that deepen the idea with relevant research, counterarguments, or connections to adjacent domains. Every factual claim must include a citation as a markdown link to the original source (e.g. [Author, Title](https://...)). When linked content is provided below the idea, prefer citing those URLs directly. For other references, link to the canonical source (paper DOI, official page, or repository). Do not fabricate URLs — if you cannot provide a real link, name the work and author without a link.
+**Key Insights** — Deepen the idea with relevant research, counterarguments, or connections to adjacent domains. Cover ALL distinct points from the original — do not limit yourself to a fixed number. Every factual claim must include a citation as a markdown link to the original source (e.g. [Author, Title](https://...)). When linked content is provided below the idea, prefer citing those URLs directly. For other references, link to the canonical source (paper DOI, official page, or repository). Do not fabricate URLs — if you cannot provide a real link, name the work and author without a link.
 
 **Open Questions** — 1-2 provocative questions that extend the idea further, suggesting unexplored directions worth revisiting.
 
-Keep the total response under 400 words. Be precise, not verbose. Prefer substance over filler. Use markdown formatting.`
+Be precise, not verbose. Prefer substance over filler. Use markdown formatting.`
 
 func (c *llmClient) augment(ctx context.Context, title, content string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
@@ -306,7 +311,35 @@ func (c *llmClient) completeWithOptions(ctx context.Context, model, system, user
 		return "", fmt.Errorf("empty response from LLM API")
 	}
 
-	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+	return c.extractContent(result.Choices[0].Message.Content), nil
+}
+
+// extractContent handles both plain string and array-of-blocks content.
+// When the response contains content blocks (e.g. from server-side tool use),
+// it concatenates the text blocks and logs non-text blocks.
+func (c *llmClient) extractContent(raw json.RawMessage) string {
+	// Try plain string first (standard OpenAI format).
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+
+	// Try array of content blocks (Anthropic format passed through).
+	var blocks []contentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		c.log.Printf("unexpected content format: %s", string(raw))
+		return strings.TrimSpace(string(raw))
+	}
+
+	var text strings.Builder
+	for _, b := range blocks {
+		if b.Type == "text" {
+			text.WriteString(b.Text)
+		} else {
+			c.log.Printf("LLM response non-text block: type=%s", b.Type)
+		}
+	}
+	return strings.TrimSpace(text.String())
 }
 
 // repairJSON escapes unescaped control characters (newlines, tabs, etc.)
