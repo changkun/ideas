@@ -52,6 +52,7 @@ func main() {
 			apiKey:     llmAPIKey,
 			model:      cmp.Or(os.Getenv("LLM_MODEL"), "anthropic/claude-sonnet-4-5-20250929"),
 			titleModel: cmp.Or(os.Getenv("LLM_TITLE_MODEL"), "anthropic/claude-haiku-4-5-20251001"),
+			log:        l,
 		},
 		github: &githubClient{
 			token: gitToken,

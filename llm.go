@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -21,6 +22,7 @@ type llmClient struct {
 	apiKey     string
 	model      string // e.g. "anthropic/claude-sonnet-4-5-20250929"
 	titleModel string // e.g. "anthropic/claude-haiku-4-5-20251001"
+	log        *log.Logger
 }
 
 type chatRequest struct {
@@ -31,6 +33,28 @@ type chatRequest struct {
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+type chatRequestWithOptions struct {
+	Model            string            `json:"model"`
+	Messages         []chatMessage     `json:"messages"`
+	WebSearchOptions *webSearchOptions `json:"web_search_options,omitempty"`
+	Tools            []tool            `json:"tools,omitempty"`
+}
+
+type webSearchOptions struct {
+	SearchContextSize string `json:"search_context_size"`
+}
+
+type tool struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	MaxUses int    `json:"max_uses,omitempty"`
+}
+
+type completionOptions struct {
+	WebSearchOptions *webSearchOptions
+	Tools            []tool
 }
 
 type chatResponse struct {
@@ -44,7 +68,27 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
-const systemPrompt = `You are a personal intellectual companion augmenting ideas for a researcher's blog. When given a raw idea or note, produce a structured deep dive that makes the idea more valuable for future retrieval and exploration.
+const augmentSystemPrompt = `You are a personal intellectual companion augmenting ideas for a researcher's blog. When given a raw idea or note, produce a structured deep dive that makes the idea more valuable for future retrieval and exploration.
+
+Write in the same language as the original content. Do not repeat the original content.
+
+You have access to web search and web fetch tools. USE THEM ACTIVELY:
+- Search for recent papers, articles, and authoritative sources that relate to the idea.
+- When you find a relevant URL, fetch it to verify the content before citing it.
+- Every citation must point to a real, verified URL. Never guess or fabricate a URL.
+- If a search does not return useful results, acknowledge the gap rather than inventing sources.
+
+Structure your response as:
+
+**Context** — Situate the idea: what field does it touch, why does it matter now, what problem or tension does it address?
+
+**Key Insights** — 2-3 concise points that deepen the idea with relevant research, counterarguments, or connections to adjacent domains. Every factual claim must include a citation as a markdown link to the original source (e.g. [Author, Title](https://...)). When linked content is provided below the idea, prefer citing those URLs directly. For other references, search for and verify the canonical source (paper DOI, official page, or repository) before linking. Do not fabricate URLs — if you cannot provide a real link, name the work and author without a link.
+
+**Open Questions** — 1-2 provocative questions that extend the idea further, suggesting unexplored directions worth revisiting.
+
+Keep the total response under 400 words. Be precise, not verbose. Prefer substance over filler. Use markdown formatting.`
+
+const augmentSystemPromptPlain = `You are a personal intellectual companion augmenting ideas for a researcher's blog. When given a raw idea or note, produce a structured deep dive that makes the idea more valuable for future retrieval and exploration.
 
 Write in the same language as the original content. Do not repeat the original content.
 
@@ -59,11 +103,23 @@ Structure your response as:
 Keep the total response under 400 words. Be precise, not verbose. Prefer substance over filler. Use markdown formatting.`
 
 func (c *llmClient) augment(ctx context.Context, title, content string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
 	prompt := fmt.Sprintf("Title: %s\n\nContent:\n%s", title, content)
-	return c.complete(ctx, c.model, systemPrompt, prompt)
+
+	// Try with web search + web fetch for grounded citations.
+	result, err := c.completeWithOptions(ctx, c.model, augmentSystemPrompt, prompt, &completionOptions{
+		WebSearchOptions: &webSearchOptions{SearchContextSize: "medium"},
+		Tools: []tool{
+			{Type: "web_fetch_20250910", Name: "web_fetch", MaxUses: 5},
+		},
+	})
+	if err == nil {
+		return result, nil
+	}
+	c.log.Printf("augment with web search failed, falling back to plain: %v", err)
+	return c.complete(ctx, c.model, augmentSystemPromptPlain, prompt)
 }
 
 const titlePrompt = `Generate a short title (max 10 words) for the following idea/note.
@@ -186,15 +242,30 @@ func (c *llmClient) translateContent(ctx context.Context, content, targetLang st
 }
 
 func (c *llmClient) complete(ctx context.Context, model, system, user string) (string, error) {
-	reqBody := chatRequest{
-		Model: model,
-		Messages: []chatMessage{
-			{Role: "system", Content: system},
-			{Role: "user", Content: user},
-		},
+	return c.completeWithOptions(ctx, model, system, user, nil)
+}
+
+func (c *llmClient) completeWithOptions(ctx context.Context, model, system, user string, opts *completionOptions) (string, error) {
+	messages := []chatMessage{
+		{Role: "system", Content: system},
+		{Role: "user", Content: user},
 	}
 
-	body, err := json.Marshal(reqBody)
+	var body []byte
+	var err error
+	if opts != nil {
+		body, err = json.Marshal(chatRequestWithOptions{
+			Model:            model,
+			Messages:         messages,
+			WebSearchOptions: opts.WebSearchOptions,
+			Tools:            opts.Tools,
+		})
+	} else {
+		body, err = json.Marshal(chatRequest{
+			Model:    model,
+			Messages: messages,
+		})
+	}
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
