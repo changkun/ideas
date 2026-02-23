@@ -127,7 +127,9 @@ func (c *llmClient) augment(ctx context.Context, title, content string) (string,
 	return c.complete(ctx, c.model, augmentSystemPromptPlain, prompt)
 }
 
-const titlePrompt = `Generate a short title (max 10 words) for the following idea/note.
+const titlePrompt = `Generate a short title (3-6 words) for the following idea/note.
+The title must be a concise noun phrase (e.g. "Microservices Caching Strategy"), NOT a sentence or summary.
+Do NOT write a full sentence. Do NOT summarize the content.
 Reply with ONLY the title text, no quotes, no punctuation at the end, no prefix.
 Use the same language as the content.`
 
@@ -153,8 +155,10 @@ func (c *llmClient) improveContent(ctx context.Context, content string) (string,
 
 const detectAndTranslatePrompt = `You will be given a title and content. Do the following:
 1. Detect whether the text is primarily English or Chinese.
-2. Polish the original title and content: fix typos, spelling errors, and grammatical mistakes; improve readability and sentence flow; keep it concise and preserve the original thought structure and tone exactly.
+2. Polish the original title and content: fix typos, spelling errors, and grammatical mistakes; improve readability and sentence flow; preserve the original thought structure and tone exactly.
+   - The polished title MUST remain a short noun phrase (3-6 words). Do NOT expand it into a sentence or a summary of the content.
 3. Translate the polished title and content to the other language (English→Chinese or Chinese→English). Preserve meaning, tone, and markdown formatting exactly.
+   - The translated title must also be a short noun phrase matching the length of the original.
 
 Reply with ONLY a JSON object in this exact format, no other text:
 {"lang":"en or zh","polished_title":"...","polished_content":"...","translated_title":"...","translated_content":"..."}`
