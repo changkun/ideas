@@ -115,8 +115,8 @@ func (s *service) processIdea(req ideaRequest) {
 	tr, err := s.llm.detectAndTranslate(ctx, req.Title, req.Content)
 	var lang string
 	var titleEn, titleZh, contentEn, contentZh string
-	if err != nil {
-		s.log.Printf("detect+translate failed, falling back to separate translation: %v", err)
+	fallbackTranslate := func(cause error) {
+		s.log.Printf("detect+translate unavailable, falling back to separate translation: %v", cause)
 		lang = detectLang(req.Content)
 		if lang == "en" {
 			titleEn = req.Title
@@ -145,18 +145,27 @@ func (s *service) processIdea(req ideaRequest) {
 				contentEn = req.Content
 			}
 		}
+	}
+	if err != nil {
+		fallbackTranslate(err)
 	} else {
-		lang = tr.Lang
-		if lang == "en" {
-			titleEn = tr.PolishedTitle
-			titleZh = tr.TranslatedTitle
-			contentEn = tr.PolishedContent
-			contentZh = tr.TranslatedContent
+		sourceLang := detectLang(req.Content)
+		tr = normalizeTranslateResult(tr, sourceLang)
+		if !isUsableTranslateResult(tr) {
+			fallbackTranslate(fmt.Errorf("invalid detect+translate payload"))
 		} else {
-			titleZh = tr.PolishedTitle
-			titleEn = tr.TranslatedTitle
-			contentZh = tr.PolishedContent
-			contentEn = tr.TranslatedContent
+			lang = tr.Lang
+			if lang == "en" {
+				titleEn = tr.PolishedTitle
+				titleZh = tr.TranslatedTitle
+				contentEn = tr.PolishedContent
+				contentZh = tr.TranslatedContent
+			} else {
+				titleZh = tr.PolishedTitle
+				titleEn = tr.TranslatedTitle
+				contentZh = tr.PolishedContent
+				contentEn = tr.TranslatedContent
+			}
 		}
 	}
 	s.log.Printf("detected language: %s", lang)
@@ -371,4 +380,62 @@ func (s *service) jsonError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(ideaResponse{OK: false, Message: msg})
+}
+
+func normalizeTranslateResult(tr *translateResult, sourceLang string) *translateResult {
+	if tr == nil {
+		return nil
+	}
+	n := *tr
+	n.Lang = strings.TrimSpace(n.Lang)
+	n.PolishedTitle = strings.TrimSpace(n.PolishedTitle)
+	n.PolishedContent = strings.TrimSpace(n.PolishedContent)
+	n.TranslatedTitle = strings.TrimSpace(n.TranslatedTitle)
+	n.TranslatedContent = strings.TrimSpace(n.TranslatedContent)
+
+	if sourceLang == "en" || sourceLang == "zh" {
+		n.Lang = sourceLang
+	}
+
+	polishedLang := detectLang(n.PolishedContent)
+	translatedLang := detectLang(n.TranslatedContent)
+	if n.Lang == "en" && polishedLang == "zh" && translatedLang == "en" {
+		n.PolishedTitle, n.TranslatedTitle = n.TranslatedTitle, n.PolishedTitle
+		n.PolishedContent, n.TranslatedContent = n.TranslatedContent, n.PolishedContent
+	}
+	if n.Lang == "zh" && polishedLang == "en" && translatedLang == "zh" {
+		n.PolishedTitle, n.TranslatedTitle = n.TranslatedTitle, n.PolishedTitle
+		n.PolishedContent, n.TranslatedContent = n.TranslatedContent, n.PolishedContent
+	}
+	return &n
+}
+
+func isUsableTranslateResult(tr *translateResult) bool {
+	if tr == nil {
+		return false
+	}
+	if tr.Lang != "en" && tr.Lang != "zh" {
+		return false
+	}
+	if !isLikelyTitle(tr.PolishedTitle) || !isLikelyTitle(tr.TranslatedTitle) {
+		return false
+	}
+	if strings.TrimSpace(tr.PolishedContent) == "" || strings.TrimSpace(tr.TranslatedContent) == "" {
+		return false
+	}
+	return true
+}
+
+func isLikelyTitle(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if strings.ContainsAny(s, "\r\n") {
+		return false
+	}
+	if len([]rune(s)) > 120 {
+		return false
+	}
+	return true
 }

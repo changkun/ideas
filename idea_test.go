@@ -59,3 +59,76 @@ func TestDetectLang(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeTranslateResult(t *testing.T) {
+	t.Run("forces source language and swaps inverted payload", func(t *testing.T) {
+		tr := &translateResult{
+			Lang:              "en",
+			PolishedTitle:     "English Title",
+			PolishedContent:   "This is an English paragraph.",
+			TranslatedTitle:   "中文标题",
+			TranslatedContent: "这是一段中文内容。",
+		}
+
+		got := normalizeTranslateResult(tr, "zh")
+		if got.Lang != "zh" {
+			t.Fatalf("lang = %q, want zh", got.Lang)
+		}
+		if got.PolishedTitle != "中文标题" || got.PolishedContent != "这是一段中文内容。" {
+			t.Fatalf("polished fields not swapped: %+v", got)
+		}
+		if got.TranslatedTitle != "English Title" || got.TranslatedContent != "This is an English paragraph." {
+			t.Fatalf("translated fields not swapped: %+v", got)
+		}
+	})
+}
+
+func TestIsUsableTranslateResult(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *translateResult
+		want bool
+	}{
+		{
+			name: "valid payload",
+			in: &translateResult{
+				Lang:              "zh",
+				PolishedTitle:     "中文标题",
+				PolishedContent:   "这是原文。",
+				TranslatedTitle:   "English Title",
+				TranslatedContent: "This is the translation.",
+			},
+			want: true,
+		},
+		{
+			name: "content in title",
+			in: &translateResult{
+				Lang:              "zh",
+				PolishedTitle:     "This is a very long content block pretending to be a title and it clearly exceeds the expected title length limits used by the service for a safe payload check.",
+				PolishedContent:   "这是原文。",
+				TranslatedTitle:   "English Title",
+				TranslatedContent: "This is the translation.",
+			},
+			want: false,
+		},
+		{
+			name: "missing content",
+			in: &translateResult{
+				Lang:              "en",
+				PolishedTitle:     "English Title",
+				PolishedContent:   "",
+				TranslatedTitle:   "中文标题",
+				TranslatedContent: "中文内容",
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isUsableTranslateResult(tt.in); got != tt.want {
+				t.Fatalf("isUsableTranslateResult() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
