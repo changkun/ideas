@@ -107,6 +107,28 @@ Structure your response as:
 
 Be precise, not verbose. Prefer substance over filler. Use markdown formatting.`
 
+const augmentAndTranslatePrompt = `You will be given:
+- the source language ("en" or "zh")
+- a title
+- content
+
+Do the following:
+1. Write an augmented deep dive in the SAME language as the source content.
+2. Translate that augmented deep dive into the other language.
+3. Keep the two outputs strictly separated. Do not mix Chinese into the English field or English into the Chinese field, except for unavoidable proper nouns, URLs, or citation titles.
+4. Preserve markdown formatting in both fields.
+
+The augmented deep dive must follow this structure:
+
+**Context** / **背景**
+**Key Insights** / **关键洞见**
+**Open Questions** / **开放问题**
+
+Choose the section headings that match the field language. The English field must use English headings. The Chinese field must use Chinese headings.
+
+Reply with ONLY a JSON object in this exact format:
+{"source_augmented":"...","translated_augmented":"..."}`
+
 func (c *llmClient) augment(ctx context.Context, title, content string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
@@ -125,6 +147,23 @@ func (c *llmClient) augment(ctx context.Context, title, content string) (string,
 	}
 	c.log.Printf("augment with web search failed, falling back to plain: %v", err)
 	return c.complete(ctx, c.model, augmentSystemPromptPlain, prompt)
+}
+
+type augmentedPair struct {
+	SourceAugmented     string `json:"source_augmented"`
+	TranslatedAugmented string `json:"translated_augmented"`
+}
+
+func (c *llmClient) augmentAndTranslate(ctx context.Context, sourceLang, title, content string) (*augmentedPair, error) {
+	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	defer cancel()
+
+	prompt := fmt.Sprintf("Source language: %s\n\nTitle: %s\n\nContent:\n%s", sourceLang, title, content)
+	raw, err := c.complete(ctx, c.model, augmentAndTranslatePrompt, prompt)
+	if err != nil {
+		return nil, err
+	}
+	return parseAugmentedPair(raw)
 }
 
 const titlePrompt = `Generate a short title (3-6 words) for the following idea/note.
@@ -169,6 +208,26 @@ type translateResult struct {
 	PolishedContent   string `json:"polished_content"`
 	TranslatedTitle   string `json:"translated_title"`
 	TranslatedContent string `json:"translated_content"`
+}
+
+func parseAugmentedPair(raw string) (*augmentedPair, error) {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+
+	var result augmentedPair
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		repaired := repairJSON(raw)
+		if err2 := json.Unmarshal([]byte(repaired), &result); err2 != nil {
+			return nil, fmt.Errorf("parse augmented response: %w (raw: %s)", err, raw)
+		}
+	}
+	if strings.TrimSpace(result.SourceAugmented) == "" || strings.TrimSpace(result.TranslatedAugmented) == "" {
+		return nil, fmt.Errorf("empty augmented fields")
+	}
+	return &result, nil
 }
 
 func (c *llmClient) detectAndTranslate(ctx context.Context, title, content string) (*translateResult, error) {

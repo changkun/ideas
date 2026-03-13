@@ -23,7 +23,7 @@ func TestRepairJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "unescaped newlines in strings",
+			name:  "unescaped newlines in strings",
 			input: "{\n  \"lang\": \"en\",\n  \"polished_title\": \"Title\",\n  \"polished_content\": \"Line one.\n\nLine two.\",\n  \"translated_title\": \"标题\",\n  \"translated_content\": \"第一行。\n\n第二行。\"\n}",
 			want: translateResult{
 				Lang:              "en",
@@ -34,7 +34,7 @@ func TestRepairJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "unescaped tabs in strings",
+			name:  "unescaped tabs in strings",
 			input: "{\n  \"lang\": \"zh\",\n  \"polished_title\": \"标题\",\n  \"polished_content\": \"项目一\t项目二\",\n  \"translated_title\": \"Title\",\n  \"translated_content\": \"Item one\tItem two\"\n}",
 			want: translateResult{
 				Lang:              "zh",
@@ -45,7 +45,7 @@ func TestRepairJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "preserves already-escaped sequences",
+			name:  "preserves already-escaped sequences",
 			input: `{"lang":"en","polished_title":"Title","polished_content":"Line one.\n\nLine two.","translated_title":"标题","translated_content":"第一行。\n\n第二行。"}`,
 			want: translateResult{
 				Lang:              "en",
@@ -56,7 +56,7 @@ func TestRepairJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "mixed escaped and unescaped newlines",
+			name:  "mixed escaped and unescaped newlines",
 			input: "{\n  \"lang\": \"en\",\n  \"polished_title\": \"Title\",\n  \"polished_content\": \"Para one.\\n\\nPara two.\nPara three.\",\n  \"translated_title\": \"标题\",\n  \"translated_content\": \"段落一。\\n\\n段落二。\n段落三。\"\n}",
 			want: translateResult{
 				Lang:              "en",
@@ -67,7 +67,7 @@ func TestRepairJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "escaped quotes inside strings preserved",
+			name:  "escaped quotes inside strings preserved",
 			input: `{"lang":"en","polished_title":"A \"Quoted\" Title","polished_content":"Content","translated_title":"「引用」标题","translated_content":"内容"}`,
 			want: translateResult{
 				Lang:              "en",
@@ -78,7 +78,7 @@ func TestRepairJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "carriage return and newline",
+			name:  "carriage return and newline",
 			input: "{\n  \"lang\": \"en\",\n  \"polished_title\": \"Title\",\n  \"polished_content\": \"Line one.\r\nLine two.\",\n  \"translated_title\": \"标题\",\n  \"translated_content\": \"行一。\r\n行二。\"\n}",
 			want: translateResult{
 				Lang:              "en",
@@ -100,6 +100,43 @@ func TestRepairJSON(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("mismatch\n got: %+v\nwant: %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseAugmentedPair(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  augmentedPair
+	}{
+		{
+			name:  "plain json",
+			input: `{"source_augmented":"**背景**\n\n中文内容","translated_augmented":"**Context**\n\nEnglish content"}`,
+			want: augmentedPair{
+				SourceAugmented:     "**背景**\n\n中文内容",
+				TranslatedAugmented: "**Context**\n\nEnglish content",
+			},
+		},
+		{
+			name:  "markdown fenced with raw newlines",
+			input: "```json\n{\n  \"source_augmented\": \"**背景**\n\n中文内容\",\n  \"translated_augmented\": \"**Context**\n\nEnglish content\"\n}\n```",
+			want: augmentedPair{
+				SourceAugmented:     "**背景**\n\n中文内容",
+				TranslatedAugmented: "**Context**\n\nEnglish content",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAugmentedPair(tt.input)
+			if err != nil {
+				t.Fatalf("parseAugmentedPair failed: %v", err)
+			}
+			if *got != tt.want {
+				t.Fatalf("mismatch\n got: %+v\nwant: %+v", *got, tt.want)
 			}
 		})
 	}
