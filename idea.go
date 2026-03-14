@@ -86,6 +86,7 @@ func (s *service) processIdea(req ideaRequest) {
 	// Fetch linked content if the idea contains URLs.
 	enriched := req.Content
 	if urls := extractURLs(req.Content); len(urls) > 0 {
+		var refs strings.Builder
 		for _, u := range urls {
 			s.log.Printf("fetching linked content: %s", u)
 			text, err := fetchURL(ctx, u)
@@ -93,7 +94,10 @@ func (s *service) processIdea(req ideaRequest) {
 				s.log.Printf("failed to fetch %s: %v", u, err)
 				continue
 			}
-			enriched += fmt.Sprintf("\n\n--- Linked content from %s ---\n%s", u, text)
+			refs.WriteString(fmt.Sprintf("\n\n--- Reference material from %s (use for context only, do NOT match this language) ---\n%s", u, text))
+		}
+		if refs.Len() > 0 {
+			enriched += refs.String()
 		}
 	}
 

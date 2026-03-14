@@ -73,51 +73,53 @@ type contentBlock struct {
 	Text string `json:"text,omitempty"`
 }
 
-const augmentSystemPrompt = `You are a personal intellectual companion augmenting ideas for a researcher's blog. When given a raw idea or note, produce a structured deep dive that makes the idea more valuable for future retrieval and exploration.
+const augmentSystemPromptTmpl = `You are a personal intellectual companion augmenting ideas for a researcher's blog. When given a raw idea or note, produce a structured deep dive that makes the idea more valuable for future retrieval and exploration.
 
-Write in the same language as the original content. IMPORTANT: preserve every specific claim, reference, URL, name, number, and technical detail from the original. Do not omit or summarize away any concrete information — your job is to ADD context, not replace what is already there.
+%s
 
-You have access to web search and web fetch tools. USE THEM ACTIVELY:
+IMPORTANT: preserve every specific claim, reference, URL, name, number, and technical detail from the original. Do not omit or summarize away any concrete information — your job is to ADD context, not replace what is already there.
+
+%s
+
+Structure your response as:
+
+**Context** — Situate the idea: what field does it touch, why does it matter now, what problem or tension does it address? Incorporate the original's key points and terminology.
+
+**Key Insights** — Deepen the idea with relevant research, counterarguments, or connections to adjacent domains. Cover ALL distinct points from the original — do not limit yourself to a fixed number. Every factual claim must include a citation as a markdown link to the original source (e.g. [Author, Title](https://...)). When linked content is provided below the idea, prefer citing those URLs directly. For other references, %slink to the canonical source (paper DOI, official page, or repository). Do not fabricate URLs — if you cannot provide a real link, name the work and author without a link.
+
+**Open Questions** — 1-2 provocative questions that extend the idea further, suggesting unexplored directions worth revisiting.
+
+Be precise, not verbose. Prefer substance over filler. Use markdown formatting.`
+
+func augmentSystemPrompt(lang string, withWebTools bool) string {
+	langDirective := "Write in the same language as the original content."
+	if lang == "zh" {
+		langDirective = "CRITICAL: You MUST write your ENTIRE response in Chinese (Simplified Chinese / 简体中文). All section headers, analysis, and prose must be in Chinese. Only preserve original English proper nouns, technical terms, URLs, and citation titles in English — everything else must be Chinese."
+	}
+
+	webDirective := ""
+	citationExtra := ""
+	if withWebTools {
+		webDirective = `You have access to web search and web fetch tools. USE THEM ACTIVELY:
 - Search for recent papers, articles, and authoritative sources that relate to the idea.
 - When you find a relevant URL, fetch it to verify the content before citing it.
 - Every citation must point to a real, verified URL. Never guess or fabricate a URL.
-- If a search does not return useful results, acknowledge the gap rather than inventing sources.
+- If a search does not return useful results, acknowledge the gap rather than inventing sources.`
+		citationExtra = "search for and verify "
+	}
 
-Structure your response as:
-
-**Context** — Situate the idea: what field does it touch, why does it matter now, what problem or tension does it address? Incorporate the original's key points and terminology.
-
-**Key Insights** — Deepen the idea with relevant research, counterarguments, or connections to adjacent domains. Cover ALL distinct points from the original — do not limit yourself to a fixed number. Every factual claim must include a citation as a markdown link to the original source (e.g. [Author, Title](https://...)). When linked content is provided below the idea, prefer citing those URLs directly. For other references, search for and verify the canonical source (paper DOI, official page, or repository) before linking. Do not fabricate URLs — if you cannot provide a real link, name the work and author without a link.
-
-**Open Questions** — 1-2 provocative questions that extend the idea further, suggesting unexplored directions worth revisiting.
-
-Be precise, not verbose. Prefer substance over filler. Use markdown formatting.`
-
-const augmentSystemPromptPlain = `You are a personal intellectual companion augmenting ideas for a researcher's blog. When given a raw idea or note, produce a structured deep dive that makes the idea more valuable for future retrieval and exploration.
-
-Write in the same language as the original content. IMPORTANT: preserve every specific claim, reference, URL, name, number, and technical detail from the original. Do not omit or summarize away any concrete information — your job is to ADD context, not replace what is already there.
-
-Structure your response as:
-
-**Context** — Situate the idea: what field does it touch, why does it matter now, what problem or tension does it address? Incorporate the original's key points and terminology.
-
-**Key Insights** — Deepen the idea with relevant research, counterarguments, or connections to adjacent domains. Cover ALL distinct points from the original — do not limit yourself to a fixed number. Every factual claim must include a citation as a markdown link to the original source (e.g. [Author, Title](https://...)). When linked content is provided below the idea, prefer citing those URLs directly. For other references, link to the canonical source (paper DOI, official page, or repository). Do not fabricate URLs — if you cannot provide a real link, name the work and author without a link.
-
-**Open Questions** — 1-2 provocative questions that extend the idea further, suggesting unexplored directions worth revisiting.
-
-Be precise, not verbose. Prefer substance over filler. Use markdown formatting.`
+	return fmt.Sprintf(augmentSystemPromptTmpl, langDirective, webDirective, citationExtra)
+}
 
 func (c *llmClient) augment(ctx context.Context, sourceLang, title, content string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
 	prompt := fmt.Sprintf("Title: %s\n\nContent:\n%s", title, content)
-	if sourceLang == "zh" {
-		prompt = "IMPORTANT: Write your response in Chinese (Simplified) only.\n\n" + prompt
-	}
 
 	// Try with web search + web fetch for grounded citations.
-	result, err := c.completeWithOptions(ctx, c.model, augmentSystemPrompt, prompt, &completionOptions{
+	sysPrompt := augmentSystemPrompt(sourceLang, true)
+	result, err := c.completeWithOptions(ctx, c.model, sysPrompt, prompt, &completionOptions{
 		WebSearchOptions: &webSearchOptions{SearchContextSize: "medium"},
 		Tools: []tool{
 			{Type: "web_fetch_20250910", Name: "web_fetch", MaxUses: 5},
@@ -127,7 +129,7 @@ func (c *llmClient) augment(ctx context.Context, sourceLang, title, content stri
 		return result, nil
 	}
 	c.log.Printf("augment with web search failed, falling back to plain: %v", err)
-	return c.complete(ctx, c.model, augmentSystemPromptPlain, prompt)
+	return c.complete(ctx, c.model, augmentSystemPrompt(sourceLang, false), prompt)
 }
 
 const titlePrompt = `Generate a short title (3-6 words) for the following idea/note.
