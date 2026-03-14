@@ -356,12 +356,34 @@ func (c *llmClient) extractContent(raw json.RawMessage) string {
 		return strings.TrimSpace(string(raw))
 	}
 
+	// When the response contains tool-use blocks (e.g. from web search),
+	// intermediate text blocks are the LLM "thinking aloud" between tool
+	// calls ("I need to search for...", "Let me verify..."). Only the
+	// final text block contains the actual structured response.
+	hasToolUse := false
+	for _, b := range blocks {
+		if b.Type != "text" {
+			hasToolUse = true
+			break
+		}
+	}
+
+	if hasToolUse {
+		// Return only the last text block (the final answer).
+		var lastText string
+		for _, b := range blocks {
+			if b.Type == "text" {
+				lastText = b.Text
+			}
+		}
+		return strings.TrimSpace(lastText)
+	}
+
+	// No tool use: concatenate all text blocks as before.
 	var text strings.Builder
 	for _, b := range blocks {
 		if b.Type == "text" {
 			text.WriteString(b.Text)
-		} else {
-			c.log.Printf("LLM response non-text block: type=%s", b.Type)
 		}
 	}
 	return strings.TrimSpace(text.String())
