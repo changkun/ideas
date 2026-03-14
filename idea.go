@@ -185,23 +185,12 @@ func (s *service) processIdea(req ideaRequest) {
 	augmented := req.Augmented
 	var augmentedEn, augmentedZh string
 	if augmented == "" {
-		s.log.Printf("augmenting and translating idea: %s", req.Title)
-		pair, pairErr := s.llm.augmentAndTranslate(ctx, lang, req.Title, enriched)
-		if pairErr == nil {
-			if lang == "en" {
-				augmentedEn = pair.SourceAugmented
-				augmentedZh = pair.TranslatedAugmented
-			} else {
-				augmentedZh = pair.SourceAugmented
-				augmentedEn = pair.TranslatedAugmented
-			}
+		s.log.Printf("augmenting idea: %s", req.Title)
+		augmentedSource, augErr := s.llm.augment(ctx, lang, req.Title, enriched)
+		if augErr != nil {
+			s.log.Printf("LLM augmentation failed, publishing without augmentation: %v", augErr)
 		} else {
-			s.log.Printf("structured augmentation failed, falling back: %v", pairErr)
-			augmented, err = s.llm.augment(ctx, req.Title, enriched)
-			if err != nil {
-				s.log.Printf("LLM augmentation failed, publishing without augmentation: %v", err)
-				augmented = ""
-			}
+			augmented = augmentedSource
 		}
 	} else {
 		s.log.Printf("using provided augmented content for: %s", req.Title)
@@ -209,14 +198,14 @@ func (s *service) processIdea(req ideaRequest) {
 
 	// Translate augmented content.
 	if augmented != "" {
+		otherLang := "zh"
+		if lang == "zh" {
+			otherLang = "en"
+		}
 		if lang == "en" {
 			augmentedEn = augmented
 		} else {
 			augmentedZh = augmented
-		}
-		otherLang := "zh"
-		if lang == "zh" {
-			otherLang = "en"
 		}
 		s.log.Printf("translating augmented content to %s...", otherLang)
 		translatedAugmented, err := s.llm.translateContent(ctx, augmented, otherLang)
