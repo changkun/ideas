@@ -163,7 +163,7 @@ const detectAndTranslatePrompt = `You will be given a title and content. Do the 
 2. Polish the original title and content: fix typos, spelling errors, and grammatical mistakes; improve readability and sentence flow; preserve the original thought structure and tone exactly.
    - The polished title MUST remain a short noun phrase (3-6 words). Do NOT expand it into a sentence or a summary of the content.
 3. Translate the polished title and content to the other language (English→Chinese or Chinese→English). Preserve meaning, tone, and markdown formatting exactly.
-   - The translated title must also be a short noun phrase matching the length of the original.
+   - The translated title must also be a short noun phrase (3-6 words). Do NOT expand it into a longer description or summary.
 
 Reply with ONLY a JSON object in this exact format, no other text:
 {"lang":"en or zh","polished_title":"...","polished_content":"...","translated_title":"...","translated_content":"..."}`
@@ -237,6 +237,22 @@ func (c *llmClient) generateSlug(ctx context.Context, titleEn string) (string, e
 		return "", fmt.Errorf("empty slug generated")
 	}
 	return slug, nil
+}
+
+const translateTitlePrompt = `Translate the following title to %s.
+The translated title MUST be a short noun phrase (3-6 words). Do NOT expand it into a sentence or summary.
+Reply with ONLY the translated title, no quotes, no punctuation at the end, no prefix.`
+
+func (c *llmClient) translateTitle(ctx context.Context, title, targetLang string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	langName := "English"
+	if targetLang == "zh" {
+		langName = "Chinese"
+	}
+	prompt := fmt.Sprintf(translateTitlePrompt, langName)
+	return c.complete(ctx, c.titleModel, prompt, title)
 }
 
 const translateContentPrompt = `Translate the following text to %s.

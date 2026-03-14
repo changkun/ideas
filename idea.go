@@ -125,7 +125,7 @@ func (s *service) processIdea(req ideaRequest) {
 		if lang == "en" {
 			titleEn = req.Title
 			contentEn = req.Content
-			titleZh, err = s.llm.translateContent(ctx, req.Title, "zh")
+			titleZh, err = s.llm.translateTitle(ctx, req.Title, "zh")
 			if err != nil {
 				s.log.Printf("title translation fallback failed: %v", err)
 				titleZh = req.Title
@@ -138,7 +138,7 @@ func (s *service) processIdea(req ideaRequest) {
 		} else {
 			titleZh = req.Title
 			contentZh = req.Content
-			titleEn, err = s.llm.translateContent(ctx, req.Title, "en")
+			titleEn, err = s.llm.translateTitle(ctx, req.Title, "en")
 			if err != nil {
 				s.log.Printf("title translation fallback failed: %v", err)
 				titleEn = req.Title
