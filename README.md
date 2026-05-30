@@ -84,8 +84,9 @@ Copy `.env.template` to `.env` and fill in the values:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `LLM_BASE_URL` | yes | — | OpenAI-compatible API base URL |
+| `LLM_BASE_URL` | yes | — | LLM API base URL |
 | `LLM_API_KEY` | yes | — | API key for the LLM service |
+| `LLM_API_FORMAT` | no | auto | API shape: `openai` for `/chat/completions`, `anthropic` for `/v1/messages` |
 | `GIT_TOKEN` | yes | — | GitHub personal access token |
 | `LLM_MODEL` | no | `anthropic/claude-sonnet-4-5-20250929` | Model for augmentation and translation |
 | `LLM_TITLE_MODEL` | no | `anthropic/claude-haiku-4-5-20251001` | Model for title, slug, and polish tasks |
@@ -103,6 +104,18 @@ CLI-specific variables:
 | `LOGIN_PASS` | yes | — | Login password |
 | `IDEAS_URL` | no | `https://api.changkun.de` | Ideas API base URL |
 | `LOGIN_URL` | no | `https://login.changkun.de` | Login service URL |
+
+Lux examples:
+
+```bash
+# OpenAI-compatible route.
+LLM_BASE_URL=https://lux.latere.ai/openrouter/v1
+LLM_API_FORMAT=openai
+
+# Native Anthropic route.
+LLM_BASE_URL=https://lux.latere.ai/anthropic
+LLM_API_FORMAT=anthropic
+```
 
 ## Deployment
 

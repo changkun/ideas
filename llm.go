@@ -22,8 +22,14 @@ type llmClient struct {
 	apiKey     string
 	model      string // e.g. "anthropic/claude-sonnet-4-5-20250929"
 	titleModel string // e.g. "anthropic/claude-haiku-4-5-20251001"
+	apiFormat  string // "openai" or "anthropic"; empty defaults to openai-compatible
 	log        *log.Logger
 }
+
+const (
+	llmAPIFormatOpenAI    = "openai"
+	llmAPIFormatAnthropic = "anthropic"
+)
 
 type chatRequest struct {
 	Model    string        `json:"model"`
@@ -57,6 +63,13 @@ type completionOptions struct {
 	Tools            []tool
 }
 
+type anthropicRequest struct {
+	Model     string        `json:"model"`
+	System    string        `json:"system,omitempty"`
+	Messages  []chatMessage `json:"messages"`
+	MaxTokens int           `json:"max_tokens"`
+}
+
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
@@ -68,9 +81,54 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
+type anthropicResponse struct {
+	Content []contentBlock `json:"content"`
+	Error   *struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
 type contentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
+}
+
+func llmAPIFormatFromEnv(value, baseURL string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case llmAPIFormatOpenAI, "openai-compatible", "chat-completions":
+		return llmAPIFormatOpenAI
+	case llmAPIFormatAnthropic, "claude", "messages":
+		return llmAPIFormatAnthropic
+	case "":
+		// Autodetect below.
+	default:
+		return llmAPIFormatOpenAI
+	}
+
+	trimmed := strings.TrimRight(strings.ToLower(strings.TrimSpace(baseURL)), "/")
+	if strings.HasSuffix(trimmed, "/anthropic") || strings.HasSuffix(trimmed, "/anthropic/v1") {
+		return llmAPIFormatAnthropic
+	}
+	return llmAPIFormatOpenAI
+}
+
+func (c *llmClient) format() string {
+	if c.apiFormat == llmAPIFormatAnthropic {
+		return llmAPIFormatAnthropic
+	}
+	return llmAPIFormatOpenAI
+}
+
+func (c *llmClient) supportsCompletionOptions() bool {
+	return c.format() == llmAPIFormatOpenAI
+}
+
+func (c *llmClient) modelForRequest(model string) string {
+	if c.format() == llmAPIFormatAnthropic {
+		return strings.TrimPrefix(model, "anthropic/")
+	}
+	return model
 }
 
 const augmentSystemPromptTmpl = `You are a personal intellectual companion augmenting ideas for a researcher's blog. When given a raw idea or note, produce a structured deep dive that makes the idea more valuable for future retrieval and exploration.
@@ -118,17 +176,19 @@ func (c *llmClient) augment(ctx context.Context, sourceLang, title, content stri
 	prompt := fmt.Sprintf("Title: %s\n\nContent:\n%s", title, content)
 
 	// Try with web search + web fetch for grounded citations.
-	sysPrompt := augmentSystemPrompt(sourceLang, true)
-	result, err := c.completeWithOptions(ctx, c.model, sysPrompt, prompt, &completionOptions{
-		WebSearchOptions: &webSearchOptions{SearchContextSize: "medium"},
-		Tools: []tool{
-			{Type: "web_fetch_20250910", Name: "web_fetch", MaxUses: 5},
-		},
-	})
-	if err == nil {
-		return result, nil
+	if c.supportsCompletionOptions() {
+		sysPrompt := augmentSystemPrompt(sourceLang, true)
+		result, err := c.completeWithOptions(ctx, c.model, sysPrompt, prompt, &completionOptions{
+			WebSearchOptions: &webSearchOptions{SearchContextSize: "medium"},
+			Tools: []tool{
+				{Type: "web_fetch_20250910", Name: "web_fetch", MaxUses: 5},
+			},
+		})
+		if err == nil {
+			return result, nil
+		}
+		c.log.Printf("augment with web search failed, falling back to plain: %v", err)
 	}
-	c.log.Printf("augment with web search failed, falling back to plain: %v", err)
 	return c.complete(ctx, c.model, augmentSystemPrompt(sourceLang, false), prompt)
 }
 
@@ -276,6 +336,14 @@ func (c *llmClient) complete(ctx context.Context, model, system, user string) (s
 }
 
 func (c *llmClient) completeWithOptions(ctx context.Context, model, system, user string, opts *completionOptions) (string, error) {
+	model = c.modelForRequest(model)
+	if c.format() == llmAPIFormatAnthropic {
+		if opts != nil {
+			return "", fmt.Errorf("completion options are not supported by the Anthropic Messages API")
+		}
+		return c.completeAnthropic(ctx, model, system, user)
+	}
+
 	messages := []chatMessage{
 		{Role: "system", Content: system},
 		{Role: "user", Content: user},
@@ -306,7 +374,7 @@ func (c *llmClient) completeWithOptions(ctx context.Context, model, system, user
 		return "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.setAuthHeaders(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -337,6 +405,79 @@ func (c *llmClient) completeWithOptions(ctx context.Context, model, system, user
 	}
 
 	return c.extractContent(result.Choices[0].Message.Content), nil
+}
+
+const anthropicDefaultMaxTokens = 4096
+
+func (c *llmClient) completeAnthropic(ctx context.Context, model, system, user string) (string, error) {
+	body, err := json.Marshal(anthropicRequest{
+		Model:     model,
+		System:    system,
+		Messages:  []chatMessage{{Role: "user", Content: user}},
+		MaxTokens: anthropicDefaultMaxTokens,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", anthropicMessagesURL(c.baseURL), bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuthHeaders(req)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("LLM API returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result anthropicResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("unmarshal response: %w", err)
+	}
+	if result.Error != nil {
+		return "", fmt.Errorf("LLM API error: %s", result.Error.Message)
+	}
+	if len(result.Content) == 0 {
+		return "", fmt.Errorf("empty response from LLM API")
+	}
+	raw, err := json.Marshal(result.Content)
+	if err != nil {
+		return "", fmt.Errorf("marshal response content: %w", err)
+	}
+	return c.extractContent(raw), nil
+}
+
+func anthropicMessagesURL(baseURL string) string {
+	base := strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(base, "/v1") {
+		return base + "/messages"
+	}
+	return base + "/v1/messages"
+}
+
+func (c *llmClient) setAuthHeaders(req *http.Request) {
+	if c.format() == llmAPIFormatAnthropic {
+		req.Header.Set("anthropic-version", "2023-06-01")
+		if strings.HasPrefix(strings.TrimSpace(c.apiKey), "lux_") {
+			req.Header.Set("Authorization", "Bearer "+c.apiKey)
+			return
+		}
+		req.Header.Set("x-api-key", c.apiKey)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 }
 
 // extractContent handles both plain string and array-of-blocks content.
