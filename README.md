@@ -20,7 +20,12 @@ The server accepts a raw idea, then asynchronously:
 6. Builds bilingual markdown with front matter
 7. Commits to `content/ideas/` via GitHub API
 
-Authentication is handled via [changkun.de/x/login](https://login.changkun.de) JWT tokens.
+Two kinds of caller are admitted. The browser compose box on changkun.de/ideas
+sends an access token from [latere auth](https://auth.latere.ai), obtained by
+the hosted login SDK through browser PKCE; it is verified against the issuer's
+JWKS and then checked against `AUTH_ALLOWED_PRINCIPALS`, since a valid latere
+token only proves identity, not posting rights. The CLI sends a
+[changkun.de/x/login](https://login.changkun.de) token, verified as before.
 
 ## Usage
 
@@ -95,6 +100,9 @@ Copy `.env.template` to `.env` and fill in the values:
 | `GIT_COMMITTER_EMAIL` | no | `hi+ideas@changkun.de` | Git commit author email |
 | `IDEAS_ADDR` | no | `0.0.0.0:80` | Server listen address |
 | `LOGIN_VERIFY_URL` | no | `https://login.changkun.de/verify` | Login service verify endpoint |
+| `AUTH_ALLOWED_PRINCIPALS` | no | — | Comma-separated emails / principal ids allowed to post with a latere token. Empty disables latere auth |
+| `AUTH_URL` | no | `https://auth.latere.ai` | latere auth issuer |
+| `AUTH_JWKS_URL` | no | `$AUTH_URL/.well-known/jwks.json` | JWKS document used to verify latere tokens |
 
 CLI-specific variables:
 

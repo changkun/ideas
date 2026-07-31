@@ -1,6 +1,8 @@
 changkun.de/x/login v0.0.2 h1:opZ1JFgWTHuig8zAIX7z9tNeAWIHZU4SJiiSirTzgG8=
 changkun.de/x/login v0.0.2/go.mod h1:29zttM0RZrjNG95afk3QVcbSjapsyT5HjKDixuVwtTk=
-golang.org/x/sys v0.41.0 h1:Ivj+2Cp/ylzLiEU89QhWblYnOE9zerudt9Ftecq2C6k=
-golang.org/x/sys v0.41.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=
+golang.org/x/sys v0.42.0 h1:omrd2nAlyT5ESRdCLYdm3+fMfNFE/+Rf4bDIQImRJeo=
+golang.org/x/sys v0.42.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
 golang.org/x/term v0.40.0 h1:36e4zGLqU4yhjlmxEaagx2KuYbJq3EwY8K943ZsHcvg=
 golang.org/x/term v0.40.0/go.mod h1:w2P8uVp06p2iyKKuvXIm7N/y0UCRt3UfJTfZ7oOpglM=
+latere.ai/x/pkg v0.38.0 h1:I/SZq6arorGBBcaO4zsSQkuNMFZh47nikvjOXeA1G4w=
+latere.ai/x/pkg v0.38.0/go.mod h1:ucgMG9lzz5IwQ986hCp3sutOu9Hg2nSbj9u8wZDHFjc=

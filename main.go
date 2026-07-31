@@ -74,7 +74,7 @@ func main() {
 	addr := cmp.Or(os.Getenv("IDEAS_ADDR"), "0.0.0.0:80")
 	s := &http.Server{
 		Addr:         addr,
-		Handler:      logging(l)(cors(auth(r))),
+		Handler:      logging(l)(cors(auth(newLatereVerifier(l), r))),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 2 * time.Minute,
 		IdleTimeout:  time.Minute,
@@ -122,32 +122,6 @@ func cors(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
-	})
-}
-
-func auth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/ideas/ping" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Try Bearer token from Authorization header.
-		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-			token := strings.TrimPrefix(h, "Bearer ")
-			if _, err := login.Verify(token); err == nil {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-
-		// Fall back to query param / cookie via SDK.
-		if _, err := login.HandleAuth(w, r); err == nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
 }
 
