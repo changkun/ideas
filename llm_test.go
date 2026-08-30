@@ -7,7 +7,10 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"latere.ai/x/pkg/sanitize"
 )
 
 func TestRepairJSON(t *testing.T) {
@@ -201,5 +204,70 @@ func TestCompleteAnthropicUsesMessagesAPI(t *testing.T) {
 	}
 	if !sawRequest {
 		t.Fatal("server did not receive request")
+	}
+}
+
+// TestHasSlugChar covers the gate in front of sanitize.Slug: the placeholder
+// it would otherwise return is a container-name default, not a permalink.
+func TestHasSlugChar(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{in: "expertise-risk-control", want: true},
+		{in: "PBO Methods", want: true},
+		{in: "42", want: true},
+		{in: "", want: false},
+		{in: "   ", want: false},
+		{in: "!!! ??? ---", want: false},
+		{in: "中文标题", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := hasSlugChar(tt.in); got != tt.want {
+				t.Fatalf("hasSlugChar(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSlugFromModelOutput pins the permalink shape. The previous cleanup
+// deleted every character outside [a-z0-9-], so a spaced answer collapsed into
+// one unreadable word; sanitize.Slug turns each run into a single dash.
+func TestSlugFromModelOutput(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "already a slug", raw: "expertise-risk-control", want: "expertise-risk-control"},
+		{name: "spaces become dashes", raw: "expertise risk control", want: "expertise-risk-control"},
+		{name: "surrounding whitespace", raw: "  reward-hacking\n", want: "reward-hacking"},
+		{name: "uppercase is lowered", raw: "PBO Methods", want: "pbo-methods"},
+		{name: "punctuation runs collapse", raw: "llms: bottlenecks!!", want: "llms-bottlenecks"},
+		{name: "quoted answer", raw: `"language-vs-visual-ai"`, want: "language-vs-visual-ai"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !hasSlugChar(tt.raw) {
+				t.Fatalf("hasSlugChar(%q) = false, want true", tt.raw)
+			}
+			if got := sanitize.Slug(tt.raw, slugMaxLen); got != tt.want {
+				t.Fatalf("Slug(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSlugIsBounded keeps a permalink from inheriting a runaway answer.
+func TestSlugIsBounded(t *testing.T) {
+	got := sanitize.Slug(strings.Repeat("word ", 200), slugMaxLen)
+	if len(got) > slugMaxLen {
+		t.Fatalf("Slug() = %q, %d bytes, want at most %d", got, len(got), slugMaxLen)
+	}
+	if strings.HasSuffix(got, "-") {
+		t.Fatalf("Slug() = %q, want no trailing dash", got)
 	}
 }

@@ -12,9 +12,10 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
+
+	"latere.ai/x/pkg/sanitize"
 )
 
 type llmClient struct {
@@ -247,14 +248,33 @@ func (c *llmClient) generateSlug(ctx context.Context, titleEn string) (string, e
 		return "", err
 	}
 
-	// Sanitize: lowercase, trim, remove anything that's not a-z0-9 or hyphen.
-	slug := strings.ToLower(strings.TrimSpace(raw))
-	slug = regexp.MustCompile(`[^a-z0-9-]+`).ReplaceAllString(slug, "")
-	slug = strings.Trim(slug, "-")
-	if slug == "" {
-		return "", fmt.Errorf("empty slug generated")
+	// sanitize.Slug substitutes a fixed placeholder when the input carries
+	// nothing alphanumeric. That is a sensible default for a container name
+	// and a bad one for a permalink, so the unusable case is rejected here
+	// instead: a post must never publish under a slug the model did not
+	// produce. Checking the input rather than comparing against the
+	// placeholder also keeps a model that legitimately answers "task" from
+	// being mistaken for a failure.
+	if !hasSlugChar(raw) {
+		return "", fmt.Errorf("no usable slug in model output %q", raw)
 	}
-	return slug, nil
+	return sanitize.Slug(raw, slugMaxLen), nil
+}
+
+// slugMaxLen bounds the permalink. sanitize.Slug stops accumulating once the
+// result reaches this length, so the bound is exact.
+const slugMaxLen = 60
+
+// hasSlugChar reports whether s carries a character sanitize.Slug will keep.
+// It mirrors that function's own test, applied after the same lowercasing, so
+// the two cannot disagree about what counts as empty.
+func hasSlugChar(s string) bool {
+	for _, r := range strings.ToLower(s) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *llmClient) translateTitle(ctx context.Context, title, targetLang string) (string, error) {
