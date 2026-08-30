@@ -20,6 +20,11 @@ The server accepts a raw idea, then asynchronously:
 6. Builds bilingual markdown with front matter
 7. Commits to `content/ideas/` via GitHub API
 
+Every instruction the service sends to an LLM lives in `prompts/` as a Go text
+template, compiled into the binary with `go:embed`. A deployed server carries
+its own prompts and cannot drift from the ones it was built with, and editing
+what the model is told is a change to a text file rather than to Go source.
+
 Callers authenticate with an access token from
 [latere auth](https://auth.latere.ai), which the compose box on
 changkun.de/ideas obtains through browser PKCE. The token is verified against

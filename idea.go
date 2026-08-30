@@ -94,7 +94,12 @@ func (s *service) processIdea(req ideaRequest) {
 				s.log.Printf("failed to fetch %s: %v", u, err)
 				continue
 			}
-			refs.WriteString(fmt.Sprintf("\n\n--- Reference material from %s (use for context only, do NOT match this language) ---\n%s", u, text))
+			ref, err := renderPrompt(promptReference, referenceData{URL: u, Text: text})
+			if err != nil {
+				s.log.Printf("failed to render reference for %s: %v", u, err)
+				continue
+			}
+			refs.WriteString("\n\n" + ref)
 		}
 		if refs.Len() > 0 {
 			enriched += refs.String()

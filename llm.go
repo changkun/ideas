@@ -131,53 +131,21 @@ func (c *llmClient) modelForRequest(model string) string {
 	return model
 }
 
-const augmentSystemPromptTmpl = `You are a personal intellectual companion augmenting ideas for a researcher's blog. When given a raw idea or note, produce a structured deep dive that makes the idea more valuable for future retrieval and exploration.
-
-%s
-
-IMPORTANT: preserve every specific claim, reference, URL, name, number, and technical detail from the original. Do not omit or summarize away any concrete information — your job is to ADD context, not replace what is already there.
-
-%s
-
-Structure your response as:
-
-**Context** — Situate the idea: what field does it touch, why does it matter now, what problem or tension does it address? Incorporate the original's key points and terminology.
-
-**Key Insights** — Deepen the idea with relevant research, counterarguments, or connections to adjacent domains. Cover ALL distinct points from the original — do not limit yourself to a fixed number. Every factual claim must include a citation as a markdown link to the original source (e.g. [Author, Title](https://...)). When linked content is provided below the idea, prefer citing those URLs directly. For other references, %slink to the canonical source (paper DOI, official page, or repository). Do not fabricate URLs — if you cannot provide a real link, name the work and author without a link.
-
-**Open Questions** — 1-2 provocative questions that extend the idea further, suggesting unexplored directions worth revisiting.
-
-Be precise, not verbose. Prefer substance over filler. Use markdown formatting.`
-
-func augmentSystemPrompt(lang string, withWebTools bool) string {
-	langDirective := "Write in the same language as the original content."
-	if lang == "zh" {
-		langDirective = "CRITICAL: You MUST write your ENTIRE response in Chinese (Simplified Chinese / 简体中文). All section headers, analysis, and prose must be in Chinese. Only preserve original English proper nouns, technical terms, URLs, and citation titles in English — everything else must be Chinese."
-	}
-
-	webDirective := ""
-	citationExtra := ""
-	if withWebTools {
-		webDirective = `You have access to web search and web fetch tools. USE THEM ACTIVELY:
-- Search for recent papers, articles, and authoritative sources that relate to the idea.
-- When you find a relevant URL, fetch it to verify the content before citing it.
-- Every citation must point to a real, verified URL. Never guess or fabricate a URL.
-- If a search does not return useful results, acknowledge the gap rather than inventing sources.`
-		citationExtra = "search for and verify "
-	}
-
-	return fmt.Sprintf(augmentSystemPromptTmpl, langDirective, webDirective, citationExtra)
-}
-
 func (c *llmClient) augment(ctx context.Context, sourceLang, title, content string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
-	prompt := fmt.Sprintf("Title: %s\n\nContent:\n%s", title, content)
+	prompt, err := renderPrompt(promptIdeaInput, ideaInputData{Title: title, Content: content})
+	if err != nil {
+		return "", err
+	}
 
 	// Try with web search + web fetch for grounded citations.
 	if c.supportsCompletionOptions() {
-		sysPrompt := augmentSystemPrompt(sourceLang, true)
+		sysPrompt, err := renderPrompt(promptAugment, augmentData{Lang: sourceLang, WebTools: true})
+		if err != nil {
+			return "", err
+		}
 		result, err := c.completeWithOptions(ctx, c.model, sysPrompt, prompt, &completionOptions{
 			WebSearchOptions: &webSearchOptions{SearchContextSize: "medium"},
 			Tools: []tool{
@@ -189,44 +157,35 @@ func (c *llmClient) augment(ctx context.Context, sourceLang, title, content stri
 		}
 		c.log.Printf("augment with web search failed, falling back to plain: %v", err)
 	}
-	return c.complete(ctx, c.model, augmentSystemPrompt(sourceLang, false), prompt)
-}
 
-const titlePrompt = `Generate a short title (3-6 words) for the following idea/note.
-The title must be a concise noun phrase (e.g. "Microservices Caching Strategy"), NOT a sentence or summary.
-Do NOT write a full sentence. Do NOT summarize the content.
-Reply with ONLY the title text, no quotes, no punctuation at the end, no prefix.
-Use the same language as the content.`
+	sysPrompt, err := renderPrompt(promptAugment, augmentData{Lang: sourceLang})
+	if err != nil {
+		return "", err
+	}
+	return c.complete(ctx, c.model, sysPrompt, prompt)
+}
 
 func (c *llmClient) generateTitle(ctx context.Context, content string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	return c.complete(ctx, c.titleModel, titlePrompt, content)
+	system, err := renderPrompt(promptTitle, nil)
+	if err != nil {
+		return "", err
+	}
+	return c.complete(ctx, c.titleModel, system, content)
 }
-
-const improvePrompt = `Fix typos, spelling errors, and grammatical mistakes in the following text.
-Improve readability and sentence flow where needed.
-Preserve the original meaning and tone precisely.
-Return only the improved text, no commentary or explanation.
-Use the same language as the input.`
 
 func (c *llmClient) improveContent(ctx context.Context, content string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	return c.complete(ctx, c.titleModel, improvePrompt, content)
+	system, err := renderPrompt(promptImprove, nil)
+	if err != nil {
+		return "", err
+	}
+	return c.complete(ctx, c.titleModel, system, content)
 }
-
-const detectAndTranslatePrompt = `You will be given a title and content. Do the following:
-1. Detect whether the text is primarily English or Chinese.
-2. Polish the original title and content: fix typos, spelling errors, and grammatical mistakes; improve readability and sentence flow; preserve the original thought structure and tone exactly.
-   - The polished title MUST remain a short noun phrase (3-6 words). Do NOT expand it into a sentence or a summary of the content.
-3. Translate the polished title and content to the other language (English→Chinese or Chinese→English). Preserve meaning, tone, and markdown formatting exactly.
-   - The translated title must also be a short noun phrase (3-6 words). Do NOT expand it into a longer description or summary.
-
-Reply with ONLY a JSON object in this exact format, no other text:
-{"lang":"en or zh","polished_title":"...","polished_content":"...","translated_title":"...","translated_content":"..."}`
 
 type translateResult struct {
 	Lang              string `json:"lang"`
@@ -240,8 +199,15 @@ func (c *llmClient) detectAndTranslate(ctx context.Context, title, content strin
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	prompt := fmt.Sprintf("Title: %s\n\nContent:\n%s", title, content)
-	raw, err := c.complete(ctx, c.titleModel, detectAndTranslatePrompt, prompt)
+	system, err := renderPrompt(promptDetectTranslate, nil)
+	if err != nil {
+		return nil, err
+	}
+	prompt, err := renderPrompt(promptIdeaInput, ideaInputData{Title: title, Content: content})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := c.complete(ctx, c.titleModel, system, prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -268,23 +234,15 @@ func (c *llmClient) detectAndTranslate(ctx context.Context, title, content strin
 	return &result, nil
 }
 
-const slugPrompt = `Generate a short URL slug (2-3 words, hyphenated) for the given title.
-The slug should capture the core concept concisely.
-Use only lowercase ASCII letters and hyphens.
-Reply with ONLY the slug, nothing else.
-
-Examples:
-- "Expertise as Risk Control in Human-AI Optimization" → expertise-risk-control
-- "Reward Hacking Triggers Emergent Misalignment Through Self-Concept Shifts" → reward-hacking
-- "LLMs Eliminate Implementation Bottlenecks Elevating Architectural Judgment" → llms-bottlenecks
-- "PBO Preferential Bayesian Optimization Methods" → pbo-methods
-- "Language-Centric AI While Human Cognition Shifts Toward Visual-Spatial Thinking" → language-vs-visual-ai`
-
 func (c *llmClient) generateSlug(ctx context.Context, titleEn string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	raw, err := c.complete(ctx, c.titleModel, slugPrompt, titleEn)
+	system, err := renderPrompt(promptSlug, nil)
+	if err != nil {
+		return "", err
+	}
+	raw, err := c.complete(ctx, c.titleModel, system, titleEn)
 	if err != nil {
 		return "", err
 	}
@@ -299,36 +257,26 @@ func (c *llmClient) generateSlug(ctx context.Context, titleEn string) (string, e
 	return slug, nil
 }
 
-const translateTitlePrompt = `Translate the following title to %s.
-The translated title MUST be a short noun phrase (3-6 words). Do NOT expand it into a sentence or summary.
-Reply with ONLY the translated title, no quotes, no punctuation at the end, no prefix.`
-
 func (c *llmClient) translateTitle(ctx context.Context, title, targetLang string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	langName := "English"
-	if targetLang == "zh" {
-		langName = "Chinese"
+	system, err := renderPrompt(promptTranslateTitle, languageData{Language: languageName(targetLang)})
+	if err != nil {
+		return "", err
 	}
-	prompt := fmt.Sprintf(translateTitlePrompt, langName)
-	return c.complete(ctx, c.titleModel, prompt, title)
+	return c.complete(ctx, c.titleModel, system, title)
 }
-
-const translateContentPrompt = `Translate the following text to %s.
-Preserve the original meaning, tone, and markdown formatting exactly.
-Return only the translated text, no commentary or explanation.`
 
 func (c *llmClient) translateContent(ctx context.Context, content, targetLang string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	langName := "English"
-	if targetLang == "zh" {
-		langName = "Chinese"
+	system, err := renderPrompt(promptTranslateContent, languageData{Language: languageName(targetLang)})
+	if err != nil {
+		return "", err
 	}
-	prompt := fmt.Sprintf(translateContentPrompt, langName)
-	return c.complete(ctx, c.titleModel, prompt, content)
+	return c.complete(ctx, c.titleModel, system, content)
 }
 
 func (c *llmClient) complete(ctx context.Context, model, system, user string) (string, error) {
