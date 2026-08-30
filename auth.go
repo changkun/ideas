@@ -14,9 +14,8 @@ import (
 	"latere.ai/x/pkg/jwtauth"
 )
 
-// latereVerifier accepts the RS256 access tokens that auth.latere.ai issues,
-// whether through browser PKCE from the blog compose box or through the
-// device flow behind `latere login` for the CLI.
+// latereVerifier accepts the RS256 access tokens that auth.latere.ai issues to
+// the blog compose box through browser PKCE.
 //
 // Signature, issuer and expiry come from the JWKS document. Posting rights do
 // not: any latere account can mint a token for any client, so a valid
@@ -80,8 +79,8 @@ func (v *latereVerifier) allow(token string) bool {
 	return false
 }
 
-// auth admits one credential: a latere access token, carried as a Bearer by
-// both the browser compose box and the CLI. Everything else is rejected.
+// auth admits one credential: a latere access token carried as a Bearer.
+// Everything else is rejected.
 func auth(latere *latereVerifier, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ideas/ping" {

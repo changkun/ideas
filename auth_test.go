@@ -191,16 +191,15 @@ func TestAuthForgedSignature(t *testing.T) {
 	}
 }
 
-// TestAuthCLIToken covers cmd/idea after it moved off login.changkun.de: the
-// CLI now sends the auth.latere.ai token `latere login` wrote, minted for the
-// latere-cli client rather than changkun-blog. Only the principal is gated, so
-// the client it was issued to must not matter.
-func TestAuthCLIToken(t *testing.T) {
+// TestAuthForeignClient pins what the verifier does and does not check. The
+// allowlist gates the principal, never the client the token was minted for, so
+// an allowlisted person reaches the API from any latere client.
+func TestAuthForeignClient(t *testing.T) {
 	f := newAuthFixture(t)
 
 	tok := f.token(t, map[string]any{
 		"email":     "hi@changkun.de",
-		"client_id": "latere-cli",
+		"client_id": "some-other-client",
 	})
 	if got := doAuth(f.verifier("hi@changkun.de"), tok).Code; got != http.StatusOK {
 		t.Fatalf("status = %d, want %d", got, http.StatusOK)
@@ -208,8 +207,8 @@ func TestAuthCLIToken(t *testing.T) {
 }
 
 // TestAuthNoLoginFallback pins the removal of the login.changkun.de paths: an
-// opaque Bearer and a cookie/query credential are no longer verified against
-// anything, so both must fail rather than reach the handler.
+// opaque Bearer and a cookie/query credential are verified against nothing, so
+// both must fail rather than reach the handler.
 func TestAuthNoLoginFallback(t *testing.T) {
 	f := newAuthFixture(t)
 	v := f.verifier("hi@changkun.de")
