@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"latere.ai/x/pkg/sanitize"
 )
 
 type githubClient struct {
@@ -79,6 +81,11 @@ func (g *githubClient) createFile(ctx context.Context, path, content, commitMsg 
 	return nil
 }
 
+// commitMsgMaxRunes bounds the commit subject. The limit counts runes, not
+// bytes: a byte cut lands mid-rune on any Chinese title and writes invalid
+// UTF-8 into the repository history.
+const commitMsgMaxRunes = 200
+
 // sanitizeCommitMsg strips control characters and truncates the message.
 func sanitizeCommitMsg(s string) string {
 	var b strings.Builder
@@ -88,9 +95,5 @@ func sanitizeCommitMsg(s string) string {
 		}
 		b.WriteRune(r)
 	}
-	s = strings.TrimSpace(b.String())
-	if len(s) > 200 {
-		s = s[:200]
-	}
-	return s
+	return sanitize.Truncate(strings.TrimSpace(b.String()), commitMsgMaxRunes)
 }
