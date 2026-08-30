@@ -30,9 +30,22 @@ type llmClient struct {
 	log        *log.Logger
 }
 
-// maxTokens bounds every reply. Augmentation is the long one, and a deep dive
-// that runs past this is one nobody reads.
-const maxTokens = 4096
+// Reply bounds, per task rather than one number for all of them.
+//
+// A bound is not optional: the gateway substitutes its own 4096 when a request
+// omits one, so the choice is between picking a size and inheriting that. 4096
+// is right for an answer of a few words and wrong for a bilingual deep dive,
+// which it would cut off mid-sentence.
+const (
+	// maxTokensShort covers the tasks that answer in a phrase: a title, a
+	// slug, a translated title.
+	maxTokensShort = 1024
+
+	// maxTokensLong covers the tasks that return whole documents —
+	// augmentation, translation, and the polish-and-translate pass, which
+	// carries both languages in one reply.
+	maxTokensLong = 16384
+)
 
 func (c *llmClient) augment(ctx context.Context, sourceLang, title, content string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
@@ -54,7 +67,7 @@ func (c *llmClient) augment(ctx context.Context, sourceLang, title, content stri
 		Model:     c.model,
 		System:    []luxsdk.Block{{Type: luxsdk.BlockText, Text: sysPrompt}},
 		Messages:  []luxsdk.Message{luxsdk.UserText(prompt)},
-		MaxTokens: ptr(int64(maxTokens)),
+		MaxTokens: new(int64(maxTokensLong)),
 		WebSearch: &luxsdk.WebSearch{ContextSize: "medium"},
 		ServerTools: []luxsdk.ServerTool{{
 			Type:   "web_fetch_20250910",
@@ -62,17 +75,17 @@ func (c *llmClient) augment(ctx context.Context, sourceLang, title, content stri
 			Config: json.RawMessage(`{"max_uses":5}`),
 		}},
 	}
-	if result, err := c.generate(ctx, grounded); err == nil {
+	result, err := c.generate(ctx, grounded)
+	if err == nil {
 		return result, nil
-	} else {
-		c.log.Printf("augment with web search failed, falling back to plain: %v", err)
 	}
+	c.log.Printf("augment with web search failed, falling back to plain: %v", err)
 
 	plainPrompt, err := renderPrompt(promptAugment, augmentData{Lang: sourceLang})
 	if err != nil {
 		return "", err
 	}
-	return c.complete(ctx, c.model, plainPrompt, prompt)
+	return c.complete(ctx, c.model, plainPrompt, prompt, maxTokensLong)
 }
 
 func (c *llmClient) generateTitle(ctx context.Context, content string) (string, error) {
@@ -83,7 +96,7 @@ func (c *llmClient) generateTitle(ctx context.Context, content string) (string, 
 	if err != nil {
 		return "", err
 	}
-	return c.complete(ctx, c.titleModel, system, content)
+	return c.complete(ctx, c.titleModel, system, content, maxTokensShort)
 }
 
 func (c *llmClient) improveContent(ctx context.Context, content string) (string, error) {
@@ -94,7 +107,7 @@ func (c *llmClient) improveContent(ctx context.Context, content string) (string,
 	if err != nil {
 		return "", err
 	}
-	return c.complete(ctx, c.titleModel, system, content)
+	return c.complete(ctx, c.titleModel, system, content, maxTokensLong)
 }
 
 type translateResult struct {
@@ -117,7 +130,7 @@ func (c *llmClient) detectAndTranslate(ctx context.Context, title, content strin
 	if err != nil {
 		return nil, err
 	}
-	raw, err := c.complete(ctx, c.titleModel, system, prompt)
+	raw, err := c.complete(ctx, c.titleModel, system, prompt, maxTokensLong)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +160,7 @@ func (c *llmClient) generateSlug(ctx context.Context, titleEn string) (string, e
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.complete(ctx, c.titleModel, system, titleEn)
+	raw, err := c.complete(ctx, c.titleModel, system, titleEn, maxTokensShort)
 	if err != nil {
 		return "", err
 	}
@@ -189,7 +202,7 @@ func (c *llmClient) translateTitle(ctx context.Context, title, targetLang string
 	if err != nil {
 		return "", err
 	}
-	return c.complete(ctx, c.titleModel, system, title)
+	return c.complete(ctx, c.titleModel, system, title, maxTokensShort)
 }
 
 func (c *llmClient) translateContent(ctx context.Context, content, targetLang string) (string, error) {
@@ -200,16 +213,18 @@ func (c *llmClient) translateContent(ctx context.Context, content, targetLang st
 	if err != nil {
 		return "", err
 	}
-	return c.complete(ctx, c.titleModel, system, content)
+	return c.complete(ctx, c.titleModel, system, content, maxTokensLong)
 }
 
 // complete runs one system-plus-user exchange and returns the reply text.
-func (c *llmClient) complete(ctx context.Context, model, system, user string) (string, error) {
+// maxTokens bounds the reply; pick it from the constants above by how much the
+// task actually has to say.
+func (c *llmClient) complete(ctx context.Context, model, system, user string, maxTokens int64) (string, error) {
 	return c.generate(ctx, &luxsdk.Request{
 		Model:     model,
 		System:    []luxsdk.Block{{Type: luxsdk.BlockText, Text: system}},
 		Messages:  []luxsdk.Message{luxsdk.UserText(user)},
-		MaxTokens: ptr(int64(maxTokens)),
+		MaxTokens: new(maxTokens),
 	})
 }
 
@@ -257,5 +272,3 @@ func answerText(blocks []luxsdk.Block) string {
 	}
 	return strings.TrimSpace(text.String())
 }
-
-func ptr[T any](v T) *T { return &v }

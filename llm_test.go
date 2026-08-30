@@ -64,7 +64,7 @@ func text(s string) map[string]any { return map[string]any{"type": "text", "text
 func TestCompleteSendsOneExchange(t *testing.T) {
 	g := newGateway(t, []map[string]any{text(" ok ")})
 
-	got, err := g.client().complete(context.Background(), "some-model", "system prompt", "user text")
+	got, err := g.client().complete(context.Background(), "some-model", "system prompt", "user text", maxTokensShort)
 	if err != nil {
 		t.Fatalf("complete() error: %v", err)
 	}
@@ -74,8 +74,8 @@ func TestCompleteSendsOneExchange(t *testing.T) {
 	if g.got["model"] != "some-model" {
 		t.Fatalf("model = %v", g.got["model"])
 	}
-	if g.got["max_tokens"] != float64(maxTokens) {
-		t.Fatalf("max_tokens = %v, want %d", g.got["max_tokens"], maxTokens)
+	if g.got["max_tokens"] != float64(maxTokensShort) {
+		t.Fatalf("max_tokens = %v, want %d", g.got["max_tokens"], maxTokensShort)
 	}
 
 	system, _ := g.got["system"].([]any)
@@ -265,7 +265,7 @@ func TestGenerateSurfacesGatewayErrors(t *testing.T) {
 	g := newGateway(t, nil)
 	g.fail = true
 
-	if _, err := g.client().complete(context.Background(), "m", "s", "u"); err == nil {
+	if _, err := g.client().complete(context.Background(), "m", "s", "u", maxTokensShort); err == nil {
 		t.Fatal("complete() = nil error, want the upstream failure surfaced")
 	}
 }
@@ -336,9 +336,12 @@ func TestSlugIsBounded(t *testing.T) {
 }
 
 // TestPromptTasks covers the thin tasks in one pass: each renders its prompt,
-// sends it as system, and returns the reply. What is worth pinning is which
-// model each one picks, since the cheap model handles the short jobs and the
-// expensive one the long ones.
+// sends it as system, and returns the reply.
+//
+// Two things are worth pinning per task. Which model it picks, since the cheap
+// one handles the short jobs and the expensive one the long ones. And which
+// token bound it sends, because the wrong one here does not fail — it returns
+// a reply cut off mid-sentence, and the post publishes that way.
 func TestPromptTasks(t *testing.T) {
 	const (
 		bigModel   = "anthropic/claude-sonnet-4-5-20250929"
@@ -350,6 +353,7 @@ func TestPromptTasks(t *testing.T) {
 		reply     string
 		call      func(*llmClient) (string, error)
 		wantModel string
+		wantMax   int
 		want      string
 		wantIn    string // a phrase the system prompt must carry
 	}{
@@ -358,14 +362,16 @@ func TestPromptTasks(t *testing.T) {
 			reply:     " A Short Title ",
 			call:      func(c *llmClient) (string, error) { return c.generateTitle(context.Background(), "some idea") },
 			wantModel: smallModel,
+			wantMax:   maxTokensShort,
 			want:      "A Short Title",
 			wantIn:    "concise noun phrase",
 		},
 		{
-			name:      "improveContent",
+			name:      "improveContent rewrites a whole body",
 			reply:     "improved text",
 			call:      func(c *llmClient) (string, error) { return c.improveContent(context.Background(), "improvd text") },
 			wantModel: smallModel,
+			wantMax:   maxTokensLong,
 			want:      "improved text",
 			wantIn:    "Fix typos",
 		},
@@ -376,6 +382,7 @@ func TestPromptTasks(t *testing.T) {
 				return c.generateSlug(context.Background(), "Expertise as Risk Control")
 			},
 			wantModel: smallModel,
+			wantMax:   maxTokensShort,
 			want:      "expertise-risk-control",
 			wantIn:    "URL slug",
 		},
@@ -384,14 +391,16 @@ func TestPromptTasks(t *testing.T) {
 			reply:     "标题",
 			call:      func(c *llmClient) (string, error) { return c.translateTitle(context.Background(), "Title", "zh") },
 			wantModel: smallModel,
+			wantMax:   maxTokensShort,
 			want:      "标题",
 			wantIn:    "Translate the following title to Chinese",
 		},
 		{
-			name:      "translateContent",
+			name:      "translateContent carries a whole document",
 			reply:     "内容",
 			call:      func(c *llmClient) (string, error) { return c.translateContent(context.Background(), "Content", "zh") },
 			wantModel: smallModel,
+			wantMax:   maxTokensLong,
 			want:      "内容",
 			wantIn:    "Translate the following text to Chinese",
 		},
@@ -400,6 +409,7 @@ func TestPromptTasks(t *testing.T) {
 			reply:     "deep dive",
 			call:      func(c *llmClient) (string, error) { return c.augment(context.Background(), "en", "T", "C") },
 			wantModel: bigModel,
+			wantMax:   maxTokensLong,
 			want:      "deep dive",
 			wantIn:    "intellectual companion",
 		},
@@ -418,6 +428,9 @@ func TestPromptTasks(t *testing.T) {
 			}
 			if g.got["model"] != tt.wantModel {
 				t.Fatalf("model = %v, want %s", g.got["model"], tt.wantModel)
+			}
+			if g.got["max_tokens"] != float64(tt.wantMax) {
+				t.Fatalf("max_tokens = %v, want %d", g.got["max_tokens"], tt.wantMax)
 			}
 			system, _ := g.got["system"].([]any)
 			b, _ := system[0].(map[string]any)

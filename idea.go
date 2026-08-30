@@ -99,7 +99,8 @@ func (s *service) processIdea(req ideaRequest) {
 				s.log.Printf("failed to render reference for %s: %v", u, err)
 				continue
 			}
-			refs.WriteString("\n\n" + ref)
+			refs.WriteString("\n\n")
+			refs.WriteString(ref)
 		}
 		if refs.Len() > 0 {
 			enriched += refs.String()
