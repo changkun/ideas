@@ -15,16 +15,10 @@ import (
 	"os/signal"
 	"strings"
 	"time"
-
-	"changkun.de/x/login"
 )
 
 func main() {
 	l := log.New(os.Stdout, "ideas: ", log.LstdFlags|log.Lshortfile|log.Lmsgprefix)
-
-	if v := os.Getenv("LOGIN_VERIFY_URL"); v != "" {
-		login.VerifyEndpoint = v
-	}
 
 	llmBaseURL := os.Getenv("LLM_BASE_URL")
 	if llmBaseURL == "" {

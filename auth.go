@@ -11,17 +11,17 @@ import (
 	"os"
 	"strings"
 
-	"changkun.de/x/login"
 	"latere.ai/x/pkg/jwtauth"
 )
 
-// latereVerifier accepts the RS256 access tokens that the changkun.de login
-// SDK obtains from the latere auth service via browser PKCE.
+// latereVerifier accepts the RS256 access tokens that auth.latere.ai issues,
+// whether through browser PKCE from the blog compose box or through the
+// device flow behind `latere login` for the CLI.
 //
 // Signature, issuer and expiry come from the JWKS document. Posting rights do
-// not: any latere account can mint a token for the changkun-blog client, so a
-// valid signature only proves *who* is calling. The allowlist decides whether
-// that principal may write to the blog.
+// not: any latere account can mint a token for any client, so a valid
+// signature only proves *who* is calling. The allowlist decides whether that
+// principal may write to the blog.
 type latereVerifier struct {
 	validator *jwtauth.Validator
 	allowed   map[string]bool // lowercased email or principal id (sub)
@@ -80,8 +80,8 @@ func (v *latereVerifier) allow(token string) bool {
 	return false
 }
 
-// auth admits two kinds of caller: the browser compose box, which carries a
-// latere access token, and the CLI, which carries a login.changkun.de token.
+// auth admits one credential: a latere access token, carried as a Bearer by
+// both the browser compose box and the CLI. Everything else is rejected.
 func auth(latere *latereVerifier, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ideas/ping" {
@@ -89,23 +89,11 @@ func auth(latere *latereVerifier, next http.Handler) http.Handler {
 			return
 		}
 
-		// Try Bearer token from Authorization header.
 		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-			token := strings.TrimPrefix(h, "Bearer ")
-			if latere.allow(token) {
+			if latere.allow(strings.TrimPrefix(h, "Bearer ")) {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if _, err := login.Verify(token); err == nil {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-
-		// Fall back to query param / cookie via SDK.
-		if _, err := login.HandleAuth(w, r); err == nil {
-			next.ServeHTTP(w, r)
-			return
 		}
 
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

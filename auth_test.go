@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"changkun.de/x/login"
 	"latere.ai/x/pkg/jwtauth"
 )
 
@@ -102,30 +101,6 @@ func (f *authFixture) verifier(allowed string) *latereVerifier {
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
-// stubLogin points the changkun.de/x/login SDK at an endpoint that rejects
-// everything, so the CLI fallback cannot reach the network or accidentally
-// admit a request the latere path was supposed to decide.
-func stubLogin(t *testing.T, user string) {
-	t.Helper()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Token string `json:"token"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		if user == "" || req.Token != "cli-token" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"username": user})
-	}))
-	t.Cleanup(srv.Close)
-
-	old := login.VerifyEndpoint
-	login.VerifyEndpoint = srv.URL
-	t.Cleanup(func() { login.VerifyEndpoint = old })
-}
-
 func doAuth(v *latereVerifier, bearer string) *httptest.ResponseRecorder {
 	h := auth(v, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -144,7 +119,6 @@ func doAuth(v *latereVerifier, bearer string) *httptest.ResponseRecorder {
 // as a Bearer. Before latere validation existed this returned 401.
 func TestAuthLatereToken(t *testing.T) {
 	f := newAuthFixture(t)
-	stubLogin(t, "")
 
 	tests := []struct {
 		name    string
@@ -207,7 +181,6 @@ func TestAuthLatereToken(t *testing.T) {
 // was signed by a key the JWKS document does not publish.
 func TestAuthForgedSignature(t *testing.T) {
 	f := newAuthFixture(t)
-	stubLogin(t, "")
 
 	forger := newAuthFixture(t)
 	forger.issuer = f.issuer // claim the real issuer, sign with the wrong key
@@ -218,17 +191,42 @@ func TestAuthForgedSignature(t *testing.T) {
 	}
 }
 
-// TestAuthLoginTokenStillWorks guards the CLI (cmd/idea), which authenticates
-// against login.changkun.de and must survive the latere addition.
-func TestAuthLoginTokenStillWorks(t *testing.T) {
+// TestAuthCLIToken covers cmd/idea after it moved off login.changkun.de: the
+// CLI now sends the auth.latere.ai token `latere login` wrote, minted for the
+// latere-cli client rather than changkun-blog. Only the principal is gated, so
+// the client it was issued to must not matter.
+func TestAuthCLIToken(t *testing.T) {
 	f := newAuthFixture(t)
-	stubLogin(t, "changkun")
 
-	if got := doAuth(f.verifier("hi@changkun.de"), "cli-token").Code; got != http.StatusOK {
+	tok := f.token(t, map[string]any{
+		"email":     "hi@changkun.de",
+		"client_id": "latere-cli",
+	})
+	if got := doAuth(f.verifier("hi@changkun.de"), tok).Code; got != http.StatusOK {
 		t.Fatalf("status = %d, want %d", got, http.StatusOK)
 	}
-	if got := doAuth(f.verifier("hi@changkun.de"), "bogus-token").Code; got != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", got, http.StatusUnauthorized)
+}
+
+// TestAuthNoLoginFallback pins the removal of the login.changkun.de paths: an
+// opaque Bearer and a cookie/query credential are no longer verified against
+// anything, so both must fail rather than reach the handler.
+func TestAuthNoLoginFallback(t *testing.T) {
+	f := newAuthFixture(t)
+	v := f.verifier("hi@changkun.de")
+
+	if got := doAuth(v, "cli-token").Code; got != http.StatusUnauthorized {
+		t.Fatalf("opaque bearer status = %d, want %d", got, http.StatusUnauthorized)
+	}
+
+	h := auth(v, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	r := httptest.NewRequest(http.MethodPost, "/ideas/post?token=cli-token", nil)
+	r.AddCookie(&http.Cookie{Name: "token", Value: "cli-token"})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("cookie/query status = %d, want %d", w.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -236,7 +234,6 @@ func TestAuthLoginTokenStillWorks(t *testing.T) {
 // configured newLatereVerifier yields nil and latere tokens are refused.
 func TestAuthDisabledLatere(t *testing.T) {
 	f := newAuthFixture(t)
-	stubLogin(t, "changkun")
 	t.Setenv("AUTH_ALLOWED_PRINCIPALS", "")
 
 	v := newLatereVerifier(log.New(io.Discard, "", 0))
@@ -266,8 +263,6 @@ func TestNewLatereVerifier(t *testing.T) {
 
 // TestAuthPingIsPublic keeps the health check reachable without credentials.
 func TestAuthPingIsPublic(t *testing.T) {
-	stubLogin(t, "")
-
 	h := auth(nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
