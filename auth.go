@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 
+	"latere.ai/x/pkg/authkit"
 	"latere.ai/x/pkg/jwtauth"
 )
 
@@ -22,9 +23,9 @@ import (
 // signature only proves *who* is calling. The allowlist decides whether that
 // principal may write to the blog.
 type latereVerifier struct {
-	validator *jwtauth.Validator
-	allowed   map[string]bool // lowercased email or principal id (sub)
-	log       *log.Logger
+	auth    *authkit.JWT
+	allowed map[string]bool // lowercased email or principal id (sub)
+	log     *log.Logger
 }
 
 // newLatereVerifier builds a verifier from the environment. It returns nil
@@ -42,9 +43,9 @@ func newLatereVerifier(l *log.Logger) *latereVerifier {
 	l.Printf("latere auth enabled: issuer=%s principals=%d", issuer, len(allowed))
 
 	return &latereVerifier{
-		validator: jwtauth.New(jwtauth.Config{JWKSURL: jwks, Issuer: issuer}),
-		allowed:   allowed,
-		log:       l,
+		auth:    authkit.NewJWT(jwtauth.New(jwtauth.Config{JWKSURL: jwks, Issuer: issuer}), nil),
+		allowed: allowed,
+		log:     l,
 	}
 }
 
@@ -59,23 +60,28 @@ func principalSet(s string) map[string]bool {
 	return set
 }
 
-// allow reports whether token is a latere token belonging to an allowlisted
-// principal. A false result covers both "not a latere token" and "not
-// permitted", so callers may fall through to another scheme; the two are
-// distinguished in the log.
-func (v *latereVerifier) allow(token string) bool {
+// allow reports whether r carries a latere token belonging to an allowlisted
+// principal.
+//
+// authkit.JWT decides identity: it reads the Bearer header and validates the
+// signature, issuer and expiry. The allowlist decides authority, and stays
+// here, because who may write to this blog is not something a token can say.
+//
+// A nil receiver denies everything. newLatereVerifier returns nil when no
+// allowlist is configured, and that must fail closed rather than panic.
+func (v *latereVerifier) allow(r *http.Request) bool {
 	if v == nil {
 		return false
 	}
-	claims, err := v.validator.Validate(token)
+	id, err := v.auth.Authenticate(r)
 	if err != nil {
 		return false
 	}
-	if v.allowed[strings.ToLower(claims.Email)] || v.allowed[strings.ToLower(claims.Sub)] {
+	if v.allowed[strings.ToLower(id.Email)] || v.allowed[strings.ToLower(id.Sub)] {
 		return true
 	}
 	v.log.Printf("latere principal not allowed: sub=%s email=%s client=%s",
-		claims.Sub, claims.Email, claims.ClientID)
+		id.Sub, id.Email, id.ClientID)
 	return false
 }
 
@@ -88,11 +94,9 @@ func auth(latere *latereVerifier, next http.Handler) http.Handler {
 			return
 		}
 
-		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-			if latere.allow(strings.TrimPrefix(h, "Bearer ")) {
-				next.ServeHTTP(w, r)
-				return
-			}
+		if latere.allow(r) {
+			next.ServeHTTP(w, r)
+			return
 		}
 
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

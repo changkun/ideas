@@ -10,6 +10,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"maps"
@@ -19,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"latere.ai/x/pkg/authkit"
 	"latere.ai/x/pkg/jwtauth"
 )
 
@@ -90,10 +92,10 @@ func (f *authFixture) token(t *testing.T, claims map[string]any) string {
 
 func (f *authFixture) verifier(allowed string) *latereVerifier {
 	return &latereVerifier{
-		validator: jwtauth.New(jwtauth.Config{
+		auth: authkit.NewJWT(jwtauth.New(jwtauth.Config{
 			JWKSURL: f.issuer + "/.well-known/jwks.json",
 			Issuer:  f.issuer,
-		}),
+		}), nil),
 		allowed: principalSet(allowed),
 		log:     log.New(io.Discard, "", 0),
 	}
@@ -203,6 +205,30 @@ func TestAuthForeignClient(t *testing.T) {
 	})
 	if got := doAuth(f.verifier("hi@changkun.de"), tok).Code; got != http.StatusOK {
 		t.Fatalf("status = %d, want %d", got, http.StatusOK)
+	}
+}
+
+// TestAuthMalformedHeader covers the header parsing authkit.JWT now owns. A
+// missing header, a scheme other than Bearer, and a bare prefix must all be
+// refused rather than reaching the validator with a nonsense token.
+func TestAuthMalformedHeader(t *testing.T) {
+	f := newAuthFixture(t)
+	v := f.verifier("hi@changkun.de")
+
+	for _, h := range []string{"", "Bearer", "Bearer ", "bearer sometoken", "Basic dXNlcjpwdw==", "Token abc"} {
+		t.Run(fmt.Sprintf("%q", h), func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/ideas/post", nil)
+			if h != "" {
+				r.Header.Set("Authorization", h)
+			}
+			w := httptest.NewRecorder()
+			auth(v, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})).ServeHTTP(w, r)
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+			}
+		})
 	}
 }
 
