@@ -6,6 +6,8 @@ package main
 
 import (
 	"bytes"
+	"cmp"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -15,7 +17,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"changkun.de/x/login"
 	"golang.org/x/term"
 )
 
@@ -27,24 +28,12 @@ func main() {
 	if url == "" {
 		url = "https://api.changkun.de"
 	}
-	if v := os.Getenv("LOGIN_URL"); v != "" {
-		login.AuthEndpoint = strings.TrimRight(v, "/") + "/auth"
-	}
-	loginUser := os.Getenv("LOGIN_USER")
-	if loginUser == "" {
-		fmt.Fprintln(os.Stderr, "LOGIN_USER is required")
-		os.Exit(1)
-	}
-	loginPass := os.Getenv("LOGIN_PASS")
-	if loginPass == "" {
-		fmt.Fprintln(os.Stderr, "LOGIN_PASS is required")
-		os.Exit(1)
-	}
-
-	// Obtain JWT from login service.
-	token, err := login.RequestToken(loginUser, loginPass)
+	// Reuse the credential `latere login` already wrote; the ideas API
+	// verifies it against auth.latere.ai.
+	authURL := cmp.Or(os.Getenv("AUTH_URL"), "https://auth.latere.ai")
+	token, err := bearerToken(context.Background(), authURL, authTokenPath())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "login failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "auth failed: %v\n", err)
 		os.Exit(1)
 	}
 
