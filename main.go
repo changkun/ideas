@@ -15,6 +15,8 @@ import (
 	"os/signal"
 	"strings"
 	"time"
+
+	"latere.ai/x/pkg/luxsdk"
 )
 
 func main() {
@@ -42,11 +44,9 @@ func main() {
 	svc := &service{
 		log: l,
 		llm: &llmClient{
-			baseURL:    llmBaseURL,
-			apiKey:     llmAPIKey,
+			lux:        luxsdk.New(llmBaseURL, luxsdk.WithAPIKey(llmAPIKey)),
 			model:      cmp.Or(os.Getenv("LLM_MODEL"), "anthropic/claude-sonnet-4-5-20250929"),
 			titleModel: cmp.Or(os.Getenv("LLM_TITLE_MODEL"), "anthropic/claude-haiku-4-5-20251001"),
-			apiFormat:  llmAPIFormatFromEnv(os.Getenv("LLM_API_FORMAT"), llmBaseURL),
 			log:        l,
 		},
 		github: &githubClient{

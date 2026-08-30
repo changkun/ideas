@@ -1,3 +1,7 @@
+// Copyright 2025 Changkun Ou. All rights reserved.
+// Use of this source code is governed by a MIT
+// license that can be found in the LICENSE file.
+
 package main
 
 import (
@@ -10,200 +14,259 @@ import (
 	"strings"
 	"testing"
 
+	"latere.ai/x/pkg/luxsdk"
 	"latere.ai/x/pkg/sanitize"
 )
 
-func TestRepairJSON(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  translateResult
-	}{
-		{
-			name:  "already valid",
-			input: `{"lang":"en","polished_title":"Title","polished_content":"Content","translated_title":"标题","translated_content":"内容"}`,
-			want: translateResult{
-				Lang:              "en",
-				PolishedTitle:     "Title",
-				PolishedContent:   "Content",
-				TranslatedTitle:   "标题",
-				TranslatedContent: "内容",
-			},
-		},
-		{
-			name:  "unescaped newlines in strings",
-			input: "{\n  \"lang\": \"en\",\n  \"polished_title\": \"Title\",\n  \"polished_content\": \"Line one.\n\nLine two.\",\n  \"translated_title\": \"标题\",\n  \"translated_content\": \"第一行。\n\n第二行。\"\n}",
-			want: translateResult{
-				Lang:              "en",
-				PolishedTitle:     "Title",
-				PolishedContent:   "Line one.\n\nLine two.",
-				TranslatedTitle:   "标题",
-				TranslatedContent: "第一行。\n\n第二行。",
-			},
-		},
-		{
-			name:  "unescaped tabs in strings",
-			input: "{\n  \"lang\": \"zh\",\n  \"polished_title\": \"标题\",\n  \"polished_content\": \"项目一\t项目二\",\n  \"translated_title\": \"Title\",\n  \"translated_content\": \"Item one\tItem two\"\n}",
-			want: translateResult{
-				Lang:              "zh",
-				PolishedTitle:     "标题",
-				PolishedContent:   "项目一\t项目二",
-				TranslatedTitle:   "Title",
-				TranslatedContent: "Item one\tItem two",
-			},
-		},
-		{
-			name:  "preserves already-escaped sequences",
-			input: `{"lang":"en","polished_title":"Title","polished_content":"Line one.\n\nLine two.","translated_title":"标题","translated_content":"第一行。\n\n第二行。"}`,
-			want: translateResult{
-				Lang:              "en",
-				PolishedTitle:     "Title",
-				PolishedContent:   "Line one.\n\nLine two.",
-				TranslatedTitle:   "标题",
-				TranslatedContent: "第一行。\n\n第二行。",
-			},
-		},
-		{
-			name:  "mixed escaped and unescaped newlines",
-			input: "{\n  \"lang\": \"en\",\n  \"polished_title\": \"Title\",\n  \"polished_content\": \"Para one.\\n\\nPara two.\nPara three.\",\n  \"translated_title\": \"标题\",\n  \"translated_content\": \"段落一。\\n\\n段落二。\n段落三。\"\n}",
-			want: translateResult{
-				Lang:              "en",
-				PolishedTitle:     "Title",
-				PolishedContent:   "Para one.\n\nPara two.\nPara three.",
-				TranslatedTitle:   "标题",
-				TranslatedContent: "段落一。\n\n段落二。\n段落三。",
-			},
-		},
-		{
-			name:  "escaped quotes inside strings preserved",
-			input: `{"lang":"en","polished_title":"A \"Quoted\" Title","polished_content":"Content","translated_title":"「引用」标题","translated_content":"内容"}`,
-			want: translateResult{
-				Lang:              "en",
-				PolishedTitle:     `A "Quoted" Title`,
-				PolishedContent:   "Content",
-				TranslatedTitle:   "「引用」标题",
-				TranslatedContent: "内容",
-			},
-		},
-		{
-			name:  "carriage return and newline",
-			input: "{\n  \"lang\": \"en\",\n  \"polished_title\": \"Title\",\n  \"polished_content\": \"Line one.\r\nLine two.\",\n  \"translated_title\": \"标题\",\n  \"translated_content\": \"行一。\r\n行二。\"\n}",
-			want: translateResult{
-				Lang:              "en",
-				PolishedTitle:     "Title",
-				PolishedContent:   "Line one.\r\nLine two.",
-				TranslatedTitle:   "标题",
-				TranslatedContent: "行一。\r\n行二。",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			repaired := repairJSON(tt.input)
-
-			var got translateResult
-			if err := json.Unmarshal([]byte(repaired), &got); err != nil {
-				t.Fatalf("repaired JSON still invalid: %v\nrepaired: %q", err, repaired)
-			}
-			if got != tt.want {
-				t.Errorf("mismatch\n got: %+v\nwant: %+v", got, tt.want)
-			}
-		})
-	}
+// gateway stands in for the Lux gateway: it records the request it received
+// and answers with the blocks the test names.
+type gateway struct {
+	srv  *httptest.Server
+	got  map[string]any
+	fail bool
 }
 
-func TestLLMAPIFormatFromEnv(t *testing.T) {
-	tests := []struct {
-		name    string
-		env     string
-		baseURL string
-		want    string
-	}{
-		{
-			name:    "explicit openai wins",
-			env:     "openai",
-			baseURL: "https://lux.latere.ai/anthropic",
-			want:    llmAPIFormatOpenAI,
-		},
-		{
-			name:    "explicit anthropic",
-			env:     "anthropic",
-			baseURL: "https://lux.latere.ai/openrouter/v1",
-			want:    llmAPIFormatAnthropic,
-		},
-		{
-			name:    "lux anthropic base",
-			baseURL: "https://lux.latere.ai/anthropic",
-			want:    llmAPIFormatAnthropic,
-		},
-		{
-			name:    "lux anthropic v1 base",
-			baseURL: "https://lux.latere.ai/anthropic/v1",
-			want:    llmAPIFormatAnthropic,
-		},
-		{
-			name:    "openrouter base",
-			baseURL: "https://lux.latere.ai/openrouter/v1",
-			want:    llmAPIFormatOpenAI,
-		},
-	}
+func newGateway(t *testing.T, blocks []map[string]any) *gateway {
+	t.Helper()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := llmAPIFormatFromEnv(tt.env, tt.baseURL); got != tt.want {
-				t.Fatalf("llmAPIFormatFromEnv(%q, %q) = %q, want %q", tt.env, tt.baseURL, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestCompleteAnthropicUsesMessagesAPI(t *testing.T) {
-	var sawRequest bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawRequest = true
-		if r.URL.Path != "/v1/messages" {
-			t.Fatalf("path = %q, want /v1/messages", r.URL.Path)
+	g := &gateway{}
+	g.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g.got = map[string]any{}
+		if err := json.NewDecoder(r.Body).Decode(&g.got); err != nil {
+			t.Errorf("decode request: %v", err)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer lux_test" {
-			t.Fatalf("Authorization = %q, want bearer virtual key", got)
-		}
-		if got := r.Header.Get("anthropic-version"); got != "2023-06-01" {
-			t.Fatalf("anthropic-version = %q, want 2023-06-01", got)
-		}
-		var req anthropicRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatal(err)
-		}
-		if req.Model != "claude-haiku-4-5-20251001" {
-			t.Fatalf("model = %q, want stripped Anthropic model id", req.Model)
-		}
-		if req.System != "system" {
-			t.Fatalf("system = %q, want system", req.System)
-		}
-		if len(req.Messages) != 1 || req.Messages[0].Role != "user" || req.Messages[0].Content != "hello" {
-			t.Fatalf("messages = %#v, want one user message", req.Messages)
+		if g.fail {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream refused"}}`))
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":" ok "}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": "m", "blocks": blocks})
+	}))
+	t.Cleanup(g.srv.Close)
+	return g
+}
+
+func (g *gateway) client() *llmClient {
+	return &llmClient{
+		lux:        luxsdk.New(g.srv.URL, luxsdk.WithAPIKey("lux_test")),
+		model:      "anthropic/claude-sonnet-4-5-20250929",
+		titleModel: "anthropic/claude-haiku-4-5-20251001",
+		log:        log.New(io.Discard, "", 0),
+	}
+}
+
+func text(s string) map[string]any { return map[string]any{"type": "text", "text": s} }
+
+// TestCompleteSendsOneExchange pins the request shape every prompt-driven task
+// shares: the prompt as system, the caller's text as the one user turn, and a
+// bounded reply.
+func TestCompleteSendsOneExchange(t *testing.T) {
+	g := newGateway(t, []map[string]any{text(" ok ")})
+
+	got, err := g.client().complete(context.Background(), "some-model", "system prompt", "user text")
+	if err != nil {
+		t.Fatalf("complete() error: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("complete() = %q, want ok with surrounding space trimmed", got)
+	}
+	if g.got["model"] != "some-model" {
+		t.Fatalf("model = %v", g.got["model"])
+	}
+	if g.got["max_tokens"] != float64(maxTokens) {
+		t.Fatalf("max_tokens = %v, want %d", g.got["max_tokens"], maxTokens)
+	}
+
+	system, _ := g.got["system"].([]any)
+	if len(system) != 1 {
+		t.Fatalf("system = %#v, want one block", g.got["system"])
+	}
+	if b, _ := system[0].(map[string]any); b["text"] != "system prompt" {
+		t.Fatalf("system block = %#v", system[0])
+	}
+	msgs, _ := g.got["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %#v, want one turn", g.got["messages"])
+	}
+}
+
+// TestAugmentAsksForGrounding covers the reason server tools exist here: the
+// augmentation must ask the provider to search and fetch, or every citation is
+// something the model recalled rather than read.
+func TestAugmentAsksForGrounding(t *testing.T) {
+	g := newGateway(t, []map[string]any{text("augmented")})
+
+	got, err := g.client().augment(context.Background(), "en", "A Title", "some idea")
+	if err != nil {
+		t.Fatalf("augment() error: %v", err)
+	}
+	if got != "augmented" {
+		t.Fatalf("augment() = %q", got)
+	}
+
+	tools, _ := g.got["server_tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("server_tools = %#v, want the fetch tool", g.got["server_tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["type"] != "web_fetch_20250910" || tool["name"] != "web_fetch" {
+		t.Fatalf("server_tools[0] = %#v", tool)
+	}
+	search, _ := g.got["web_search"].(map[string]any)
+	if search["context_size"] != "medium" {
+		t.Fatalf("web_search = %#v, want context_size medium", g.got["web_search"])
+	}
+
+	system, _ := g.got["system"].([]any)
+	b, _ := system[0].(map[string]any)
+	if !strings.Contains(b["text"].(string), "web search and web fetch tools") {
+		t.Fatalf("system prompt does not mention the tools it was given:\n%v", b["text"])
+	}
+}
+
+// TestAugmentFallsBackUngrounded keeps a provider without those tools from
+// costing the post entirely. The answer is worse and it still arrives.
+func TestAugmentFallsBackUngrounded(t *testing.T) {
+	var seen []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		seen = append(seen, body)
+		if _, grounded := body["server_tools"]; grounded {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"tools unsupported"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model":  "m",
+			"blocks": []map[string]any{text("plain augmentation")},
+		})
 	}))
 	defer srv.Close()
 
 	c := &llmClient{
-		baseURL:   srv.URL,
-		apiKey:    "lux_test",
-		apiFormat: llmAPIFormatAnthropic,
-		log:       log.New(io.Discard, "", 0),
+		lux:   luxsdk.New(srv.URL, luxsdk.WithAPIKey("lux_test")),
+		model: "m",
+		log:   log.New(io.Discard, "", 0),
 	}
-	got, err := c.complete(context.Background(), "anthropic/claude-haiku-4-5-20251001", "system", "hello")
+	got, err := c.augment(context.Background(), "en", "T", "C")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("augment() error: %v", err)
 	}
-	if got != "ok" {
-		t.Fatalf("complete() = %q, want ok", got)
+	if got != "plain augmentation" {
+		t.Fatalf("augment() = %q", got)
 	}
-	if !sawRequest {
-		t.Fatal("server did not receive request")
+	if len(seen) != 2 {
+		t.Fatalf("gateway saw %d requests, want a grounded attempt then a plain one", len(seen))
+	}
+	if _, grounded := seen[1]["server_tools"]; grounded {
+		t.Fatal("the fallback request still asked for tools")
+	}
+}
+
+// TestAnswerText covers the one piece of response handling with a judgement in
+// it. Text between tool calls is the model thinking aloud, so only the last
+// block is the answer; with no tool there is nothing to think aloud between.
+func TestAnswerText(t *testing.T) {
+	tests := []struct {
+		name   string
+		blocks []luxsdk.Block
+		want   string
+	}{
+		{
+			name:   "single text block",
+			blocks: []luxsdk.Block{{Type: luxsdk.BlockText, Text: " hello "}},
+			want:   "hello",
+		},
+		{
+			name: "no tool use joins every block",
+			blocks: []luxsdk.Block{
+				{Type: luxsdk.BlockText, Text: "part one "},
+				{Type: luxsdk.BlockText, Text: "part two"},
+			},
+			want: "part one part two",
+		},
+		{
+			name: "after a tool call only the last block is the answer",
+			blocks: []luxsdk.Block{
+				{Type: luxsdk.BlockText, Text: "I need to search for this."},
+				{Type: luxsdk.BlockToolUse, ToolUse: &luxsdk.ToolUse{ID: "t1", Name: "web_fetch"}},
+				{Type: luxsdk.BlockText, Text: "Let me verify."},
+				{Type: luxsdk.BlockToolUse, ToolUse: &luxsdk.ToolUse{ID: "t2", Name: "web_fetch"}},
+				{Type: luxsdk.BlockText, Text: "The final answer."},
+			},
+			want: "The final answer.",
+		},
+		{
+			name: "thinking is not the answer",
+			blocks: []luxsdk.Block{
+				{Type: luxsdk.BlockThinking, Text: "hmm"},
+				{Type: luxsdk.BlockText, Text: "the answer"},
+			},
+			want: "the answer",
+		},
+		{
+			name:   "no blocks",
+			blocks: nil,
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := answerText(tt.blocks); got != tt.want {
+				t.Fatalf("answerText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDetectAndTranslateRepairsReply covers the decode path end to end: the
+// model answers with the right keys inside a fence, with raw newlines in the
+// multi-line values, and the result still has to come out whole.
+func TestDetectAndTranslateRepairsReply(t *testing.T) {
+	reply := "```json\n{\n  \"lang\": \"en\",\n  \"polished_title\": \"A Title\",\n" +
+		"  \"polished_content\": \"Line one.\n\nLine two.\",\n" +
+		"  \"translated_title\": \"\u6807\u9898\",\n" +
+		"  \"translated_content\": \"\u7b2c\u4e00\u884c\u3002\n\n\u7b2c\u4e8c\u884c\u3002\"\n}\n```"
+	g := newGateway(t, []map[string]any{text(reply)})
+
+	got, err := g.client().detectAndTranslate(context.Background(), "T", "C")
+	if err != nil {
+		t.Fatalf("detectAndTranslate() error: %v", err)
+	}
+	want := translateResult{
+		Lang:              "en",
+		PolishedTitle:     "A Title",
+		PolishedContent:   "Line one.\n\nLine two.",
+		TranslatedTitle:   "\u6807\u9898",
+		TranslatedContent: "\u7b2c\u4e00\u884c\u3002\n\n\u7b2c\u4e8c\u884c\u3002",
+	}
+	if *got != want {
+		t.Fatalf("detectAndTranslate()\n got: %+v\nwant: %+v", *got, want)
+	}
+}
+
+// TestDetectAndTranslateRejectsUnknownLanguage keeps a reply the blog cannot
+// publish from reaching the markdown builder.
+func TestDetectAndTranslateRejectsUnknownLanguage(t *testing.T) {
+	g := newGateway(t, []map[string]any{text(`{"lang":"fr","polished_title":"t","polished_content":"c","translated_title":"t","translated_content":"c"}`)})
+
+	if _, err := g.client().detectAndTranslate(context.Background(), "T", "C"); err == nil {
+		t.Fatal("detectAndTranslate() = nil error, want one for an unsupported language")
+	}
+}
+
+// TestGenerateSurfacesGatewayErrors keeps a failed call from looking like an
+// empty answer, which would publish a post with a blank section.
+func TestGenerateSurfacesGatewayErrors(t *testing.T) {
+	g := newGateway(t, nil)
+	g.fail = true
+
+	if _, err := g.client().complete(context.Background(), "m", "s", "u"); err == nil {
+		t.Fatal("complete() = nil error, want the upstream failure surfaced")
 	}
 }
 
@@ -269,5 +332,108 @@ func TestSlugIsBounded(t *testing.T) {
 	}
 	if strings.HasSuffix(got, "-") {
 		t.Fatalf("Slug() = %q, want no trailing dash", got)
+	}
+}
+
+// TestPromptTasks covers the thin tasks in one pass: each renders its prompt,
+// sends it as system, and returns the reply. What is worth pinning is which
+// model each one picks, since the cheap model handles the short jobs and the
+// expensive one the long ones.
+func TestPromptTasks(t *testing.T) {
+	const (
+		bigModel   = "anthropic/claude-sonnet-4-5-20250929"
+		smallModel = "anthropic/claude-haiku-4-5-20251001"
+	)
+
+	tests := []struct {
+		name      string
+		reply     string
+		call      func(*llmClient) (string, error)
+		wantModel string
+		want      string
+		wantIn    string // a phrase the system prompt must carry
+	}{
+		{
+			name:      "generateTitle",
+			reply:     " A Short Title ",
+			call:      func(c *llmClient) (string, error) { return c.generateTitle(context.Background(), "some idea") },
+			wantModel: smallModel,
+			want:      "A Short Title",
+			wantIn:    "concise noun phrase",
+		},
+		{
+			name:      "improveContent",
+			reply:     "improved text",
+			call:      func(c *llmClient) (string, error) { return c.improveContent(context.Background(), "improvd text") },
+			wantModel: smallModel,
+			want:      "improved text",
+			wantIn:    "Fix typos",
+		},
+		{
+			name:  "generateSlug",
+			reply: "Expertise Risk Control",
+			call: func(c *llmClient) (string, error) {
+				return c.generateSlug(context.Background(), "Expertise as Risk Control")
+			},
+			wantModel: smallModel,
+			want:      "expertise-risk-control",
+			wantIn:    "URL slug",
+		},
+		{
+			name:      "translateTitle",
+			reply:     "标题",
+			call:      func(c *llmClient) (string, error) { return c.translateTitle(context.Background(), "Title", "zh") },
+			wantModel: smallModel,
+			want:      "标题",
+			wantIn:    "Translate the following title to Chinese",
+		},
+		{
+			name:      "translateContent",
+			reply:     "内容",
+			call:      func(c *llmClient) (string, error) { return c.translateContent(context.Background(), "Content", "zh") },
+			wantModel: smallModel,
+			want:      "内容",
+			wantIn:    "Translate the following text to Chinese",
+		},
+		{
+			name:      "augment uses the capable model",
+			reply:     "deep dive",
+			call:      func(c *llmClient) (string, error) { return c.augment(context.Background(), "en", "T", "C") },
+			wantModel: bigModel,
+			want:      "deep dive",
+			wantIn:    "intellectual companion",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newGateway(t, []map[string]any{text(tt.reply)})
+
+			got, err := tt.call(g.client())
+			if err != nil {
+				t.Fatalf("error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("= %q, want %q", got, tt.want)
+			}
+			if g.got["model"] != tt.wantModel {
+				t.Fatalf("model = %v, want %s", g.got["model"], tt.wantModel)
+			}
+			system, _ := g.got["system"].([]any)
+			b, _ := system[0].(map[string]any)
+			if !strings.Contains(b["text"].(string), tt.wantIn) {
+				t.Fatalf("system prompt missing %q:\n%v", tt.wantIn, b["text"])
+			}
+		})
+	}
+}
+
+// TestGenerateSlugRejectsUnusableAnswer keeps a post from publishing under a
+// placeholder permalink when the model answers with nothing usable.
+func TestGenerateSlugRejectsUnusableAnswer(t *testing.T) {
+	g := newGateway(t, []map[string]any{text("!!! ???")})
+
+	if _, err := g.client().generateSlug(context.Background(), "A Title"); err == nil {
+		t.Fatal("generateSlug() = nil error, want one")
 	}
 }

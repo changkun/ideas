@@ -20,6 +20,12 @@ The server accepts a raw idea, then asynchronously:
 6. Builds bilingual markdown with front matter
 7. Commits to `content/ideas/` via GitHub API
 
+Model calls go through the [Lux gateway](https://lux.latere.ai) using its own
+dialect, so one request shape covers every model it routes and the service does
+not care whether the model behind it speaks Anthropic or OpenAI. Augmentation
+asks the provider to search and fetch pages itself, which is what makes the
+citations point at sources that exist.
+
 Every instruction the service sends to an LLM lives in `prompts/` as a Go text
 template, compiled into the binary with `go:embed`. A deployed server carries
 its own prompts and cannot drift from the ones it was built with, and editing
@@ -68,9 +74,8 @@ Copy `.env.template` to `.env` and fill in the values:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `LLM_BASE_URL` | yes | — | LLM API base URL |
-| `LLM_API_KEY` | yes | — | API key for the LLM service |
-| `LLM_API_FORMAT` | no | auto | API shape: `openai` for `/chat/completions`, `anthropic` for `/v1/messages` |
+| `LLM_BASE_URL` | yes | — | Lux gateway base URL, e.g. `https://lux.latere.ai` |
+| `LLM_API_KEY` | yes | — | Lux API key |
 | `GIT_TOKEN` | yes | — | GitHub personal access token |
 | `LLM_MODEL` | no | `anthropic/claude-sonnet-4-5-20250929` | Model for augmentation and translation |
 | `LLM_TITLE_MODEL` | no | `anthropic/claude-haiku-4-5-20251001` | Model for title, slug, and polish tasks |
@@ -81,18 +86,6 @@ Copy `.env.template` to `.env` and fill in the values:
 | `AUTH_ALLOWED_PRINCIPALS` | no | — | Comma-separated emails / principal ids allowed to post with a latere token. Empty disables latere auth |
 | `AUTH_URL` | no | `https://auth.latere.ai` | latere auth issuer |
 | `AUTH_JWKS_URL` | no | `$AUTH_URL/.well-known/jwks.json` | JWKS document used to verify latere tokens |
-
-Lux examples:
-
-```bash
-# OpenAI-compatible route.
-LLM_BASE_URL=https://lux.latere.ai/openrouter/v1
-LLM_API_FORMAT=openai
-
-# Native Anthropic route.
-LLM_BASE_URL=https://lux.latere.ai/anthropic
-LLM_API_FORMAT=anthropic
-```
 
 ## Deployment
 

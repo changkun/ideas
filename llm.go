@@ -5,132 +5,34 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"strings"
 	"time"
 
+	"latere.ai/x/pkg/llmjson"
+	"latere.ai/x/pkg/luxsdk"
 	"latere.ai/x/pkg/sanitize"
 )
 
+// llmClient runs the service's prompts against a model.
+//
+// Every request goes through the Lux gateway's own dialect, so the wire shape
+// is the same whatever model answers: one typed request, one typed response,
+// and no branch here on whether the model behind the gateway speaks Anthropic
+// or OpenAI.
 type llmClient struct {
-	baseURL    string // e.g. "https://llm.changkun.de"
-	apiKey     string
-	model      string // e.g. "anthropic/claude-sonnet-4-5-20250929"
-	titleModel string // e.g. "anthropic/claude-haiku-4-5-20251001"
-	apiFormat  string // "openai" or "anthropic"; empty defaults to openai-compatible
+	lux        luxsdk.Caller
+	model      string // for augmentation and translation
+	titleModel string // for title, slug, and polish tasks
 	log        *log.Logger
 }
 
-const (
-	llmAPIFormatOpenAI    = "openai"
-	llmAPIFormatAnthropic = "anthropic"
-)
-
-type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-}
-
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type chatRequestWithOptions struct {
-	Model            string            `json:"model"`
-	Messages         []chatMessage     `json:"messages"`
-	WebSearchOptions *webSearchOptions `json:"web_search_options,omitempty"`
-	Tools            []tool            `json:"tools,omitempty"`
-}
-
-type webSearchOptions struct {
-	SearchContextSize string `json:"search_context_size"`
-}
-
-type tool struct {
-	Type    string `json:"type"`
-	Name    string `json:"name"`
-	MaxUses int    `json:"max_uses,omitempty"`
-}
-
-type completionOptions struct {
-	WebSearchOptions *webSearchOptions
-	Tools            []tool
-}
-
-type anthropicRequest struct {
-	Model     string        `json:"model"`
-	System    string        `json:"system,omitempty"`
-	Messages  []chatMessage `json:"messages"`
-	MaxTokens int           `json:"max_tokens"`
-}
-
-type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content json.RawMessage `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
-}
-
-type anthropicResponse struct {
-	Content []contentBlock `json:"content"`
-	Error   *struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
-}
-
-type contentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-}
-
-func llmAPIFormatFromEnv(value, baseURL string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case llmAPIFormatOpenAI, "openai-compatible", "chat-completions":
-		return llmAPIFormatOpenAI
-	case llmAPIFormatAnthropic, "claude", "messages":
-		return llmAPIFormatAnthropic
-	case "":
-		// Autodetect below.
-	default:
-		return llmAPIFormatOpenAI
-	}
-
-	trimmed := strings.TrimRight(strings.ToLower(strings.TrimSpace(baseURL)), "/")
-	if strings.HasSuffix(trimmed, "/anthropic") || strings.HasSuffix(trimmed, "/anthropic/v1") {
-		return llmAPIFormatAnthropic
-	}
-	return llmAPIFormatOpenAI
-}
-
-func (c *llmClient) format() string {
-	if c.apiFormat == llmAPIFormatAnthropic {
-		return llmAPIFormatAnthropic
-	}
-	return llmAPIFormatOpenAI
-}
-
-func (c *llmClient) supportsCompletionOptions() bool {
-	return c.format() == llmAPIFormatOpenAI
-}
-
-func (c *llmClient) modelForRequest(model string) string {
-	if c.format() == llmAPIFormatAnthropic {
-		return strings.TrimPrefix(model, "anthropic/")
-	}
-	return model
-}
+// maxTokens bounds every reply. Augmentation is the long one, and a deep dive
+// that runs past this is one nobody reads.
+const maxTokens = 4096
 
 func (c *llmClient) augment(ctx context.Context, sourceLang, title, content string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
@@ -141,29 +43,36 @@ func (c *llmClient) augment(ctx context.Context, sourceLang, title, content stri
 		return "", err
 	}
 
-	// Try with web search + web fetch for grounded citations.
-	if c.supportsCompletionOptions() {
-		sysPrompt, err := renderPrompt(promptAugment, augmentData{Lang: sourceLang, WebTools: true})
-		if err != nil {
-			return "", err
-		}
-		result, err := c.completeWithOptions(ctx, c.model, sysPrompt, prompt, &completionOptions{
-			WebSearchOptions: &webSearchOptions{SearchContextSize: "medium"},
-			Tools: []tool{
-				{Type: "web_fetch_20250910", Name: "web_fetch", MaxUses: 5},
-			},
-		})
-		if err == nil {
-			return result, nil
-		}
-		c.log.Printf("augment with web search failed, falling back to plain: %v", err)
-	}
-
-	sysPrompt, err := renderPrompt(promptAugment, augmentData{Lang: sourceLang})
+	// Ask the provider to search and fetch, so the citations point at pages
+	// that exist. A model without those tools still answers, which is why
+	// this is a first attempt rather than the only one.
+	sysPrompt, err := renderPrompt(promptAugment, augmentData{Lang: sourceLang, WebTools: true})
 	if err != nil {
 		return "", err
 	}
-	return c.complete(ctx, c.model, sysPrompt, prompt)
+	grounded := &luxsdk.Request{
+		Model:     c.model,
+		System:    []luxsdk.Block{{Type: luxsdk.BlockText, Text: sysPrompt}},
+		Messages:  []luxsdk.Message{luxsdk.UserText(prompt)},
+		MaxTokens: ptr(int64(maxTokens)),
+		WebSearch: &luxsdk.WebSearch{ContextSize: "medium"},
+		ServerTools: []luxsdk.ServerTool{{
+			Type:   "web_fetch_20250910",
+			Name:   "web_fetch",
+			Config: json.RawMessage(`{"max_uses":5}`),
+		}},
+	}
+	if result, err := c.generate(ctx, grounded); err == nil {
+		return result, nil
+	} else {
+		c.log.Printf("augment with web search failed, falling back to plain: %v", err)
+	}
+
+	plainPrompt, err := renderPrompt(promptAugment, augmentData{Lang: sourceLang})
+	if err != nil {
+		return "", err
+	}
+	return c.complete(ctx, c.model, plainPrompt, prompt)
 }
 
 func (c *llmClient) generateTitle(ctx context.Context, content string) (string, error) {
@@ -213,18 +122,13 @@ func (c *llmClient) detectAndTranslate(ctx context.Context, title, content strin
 		return nil, err
 	}
 
-	// Strip markdown code fences if present.
-	raw = strings.TrimSpace(raw)
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	raw = strings.TrimSpace(raw)
+	raw = llmjson.Unfence(raw)
 
 	var result translateResult
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		// LLMs sometimes produce JSON with unescaped control characters
-		// inside string values. Try to repair before giving up.
-		repaired := repairJSON(raw)
+		// A model asked for JSON produces the right keys and the wrong
+		// encoding often enough to be worth a second attempt.
+		repaired := llmjson.Repair(raw)
 		if err2 := json.Unmarshal([]byte(repaired), &result); err2 != nil {
 			return nil, fmt.Errorf("parse translation response: %w (raw: %s)", err, raw)
 		}
@@ -299,241 +203,59 @@ func (c *llmClient) translateContent(ctx context.Context, content, targetLang st
 	return c.complete(ctx, c.titleModel, system, content)
 }
 
+// complete runs one system-plus-user exchange and returns the reply text.
 func (c *llmClient) complete(ctx context.Context, model, system, user string) (string, error) {
-	return c.completeWithOptions(ctx, model, system, user, nil)
-}
-
-func (c *llmClient) completeWithOptions(ctx context.Context, model, system, user string, opts *completionOptions) (string, error) {
-	model = c.modelForRequest(model)
-	if c.format() == llmAPIFormatAnthropic {
-		if opts != nil {
-			return "", fmt.Errorf("completion options are not supported by the Anthropic Messages API")
-		}
-		return c.completeAnthropic(ctx, model, system, user)
-	}
-
-	messages := []chatMessage{
-		{Role: "system", Content: system},
-		{Role: "user", Content: user},
-	}
-
-	var body []byte
-	var err error
-	if opts != nil {
-		body, err = json.Marshal(chatRequestWithOptions{
-			Model:            model,
-			Messages:         messages,
-			WebSearchOptions: opts.WebSearchOptions,
-			Tools:            opts.Tools,
-		})
-	} else {
-		body, err = json.Marshal(chatRequest{
-			Model:    model,
-			Messages: messages,
-		})
-	}
-	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
-	}
-
-	url := strings.TrimRight(c.baseURL, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	c.setAuthHeaders(req)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("LLM API returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result chatResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("unmarshal response: %w", err)
-	}
-
-	if result.Error != nil {
-		return "", fmt.Errorf("LLM API error: %s", result.Error.Message)
-	}
-
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("empty response from LLM API")
-	}
-
-	return c.extractContent(result.Choices[0].Message.Content), nil
-}
-
-const anthropicDefaultMaxTokens = 4096
-
-func (c *llmClient) completeAnthropic(ctx context.Context, model, system, user string) (string, error) {
-	body, err := json.Marshal(anthropicRequest{
+	return c.generate(ctx, &luxsdk.Request{
 		Model:     model,
-		System:    system,
-		Messages:  []chatMessage{{Role: "user", Content: user}},
-		MaxTokens: anthropicDefaultMaxTokens,
+		System:    []luxsdk.Block{{Type: luxsdk.BlockText, Text: system}},
+		Messages:  []luxsdk.Message{luxsdk.UserText(user)},
+		MaxTokens: ptr(int64(maxTokens)),
 	})
-	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", anthropicMessagesURL(c.baseURL), bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	c.setAuthHeaders(req)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("LLM API returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result anthropicResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("unmarshal response: %w", err)
-	}
-	if result.Error != nil {
-		return "", fmt.Errorf("LLM API error: %s", result.Error.Message)
-	}
-	if len(result.Content) == 0 {
-		return "", fmt.Errorf("empty response from LLM API")
-	}
-	raw, err := json.Marshal(result.Content)
-	if err != nil {
-		return "", fmt.Errorf("marshal response content: %w", err)
-	}
-	return c.extractContent(raw), nil
 }
 
-func anthropicMessagesURL(baseURL string) string {
-	base := strings.TrimRight(baseURL, "/")
-	if strings.HasSuffix(base, "/v1") {
-		return base + "/messages"
+// generate sends req and returns the model's answer.
+//
+// A dialect that cannot express part of the request reports it rather than
+// dropping it silently, so a lost field is logged: an augmentation that asked
+// for web search and did not get it is worth knowing about even though the
+// answer still arrives.
+func (c *llmClient) generate(ctx context.Context, req *luxsdk.Request) (string, error) {
+	res, err := c.lux.Generate(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("generate: %w", err)
 	}
-	return base + "/v1/messages"
+	if len(res.Loss) > 0 {
+		c.log.Printf("gateway could not carry %v for model %s", res.Loss, req.Model)
+	}
+	return answerText(res.Blocks), nil
 }
 
-func (c *llmClient) setAuthHeaders(req *http.Request) {
-	if c.format() == llmAPIFormatAnthropic {
-		req.Header.Set("anthropic-version", "2023-06-01")
-		if strings.HasPrefix(strings.TrimSpace(c.apiKey), "lux_") {
-			req.Header.Set("Authorization", "Bearer "+c.apiKey)
-			return
-		}
-		req.Header.Set("x-api-key", c.apiKey)
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-}
-
-// extractContent handles both plain string and array-of-blocks content.
-// When the response contains content blocks (e.g. from server-side tool use),
-// it concatenates the text blocks and logs non-text blocks.
-func (c *llmClient) extractContent(raw json.RawMessage) string {
-	// Try plain string first (standard OpenAI format).
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return strings.TrimSpace(s)
-	}
-
-	// Try array of content blocks (Anthropic format passed through).
-	var blocks []contentBlock
-	if err := json.Unmarshal(raw, &blocks); err != nil {
-		c.log.Printf("unexpected content format: %s", string(raw))
-		return strings.TrimSpace(string(raw))
-	}
-
-	// When the response contains tool-use blocks (e.g. from web search),
-	// intermediate text blocks are the LLM "thinking aloud" between tool
-	// calls ("I need to search for...", "Let me verify..."). Only the
-	// final text block contains the actual structured response.
-	hasToolUse := false
+// answerText pulls the reply out of a response's blocks.
+//
+// When the model used a tool, the text blocks between the calls are it
+// thinking aloud — "I need to search for...", "Let me verify..." — and only
+// the last one carries the answer the prompt asked for. Without a tool there
+// is nothing to think aloud between, so every text block is part of the reply.
+func answerText(blocks []luxsdk.Block) string {
+	usedTool := false
 	for _, b := range blocks {
-		if b.Type != "text" {
-			hasToolUse = true
+		if b.Type != luxsdk.BlockText {
+			usedTool = true
 			break
 		}
 	}
 
-	if hasToolUse {
-		// Return only the last text block (the final answer).
-		var lastText string
-		for _, b := range blocks {
-			if b.Type == "text" {
-				lastText = b.Text
-			}
-		}
-		return strings.TrimSpace(lastText)
-	}
-
-	// No tool use: concatenate all text blocks as before.
 	var text strings.Builder
 	for _, b := range blocks {
-		if b.Type == "text" {
-			text.WriteString(b.Text)
+		if b.Type != luxsdk.BlockText {
+			continue
 		}
+		if usedTool {
+			text.Reset()
+		}
+		text.WriteString(b.Text)
 	}
 	return strings.TrimSpace(text.String())
 }
 
-// repairJSON escapes unescaped control characters (newlines, tabs, etc.)
-// inside JSON string values. LLMs sometimes produce pretty-printed JSON
-// with literal newlines in string content instead of \n escape sequences.
-func repairJSON(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	inString := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if inString {
-			switch c {
-			case '"':
-				inString = false
-				b.WriteByte(c)
-			case '\\':
-				// Keep existing escape sequences as-is.
-				b.WriteByte(c)
-				if i+1 < len(s) {
-					i++
-					b.WriteByte(s[i])
-				}
-			case '\n':
-				b.WriteString(`\n`)
-			case '\r':
-				b.WriteString(`\r`)
-			case '\t':
-				b.WriteString(`\t`)
-			default:
-				b.WriteByte(c)
-			}
-		} else {
-			if c == '"' {
-				inString = true
-			}
-			b.WriteByte(c)
-		}
-	}
-	return b.String()
-}
+func ptr[T any](v T) *T { return &v }
