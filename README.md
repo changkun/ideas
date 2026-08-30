@@ -20,20 +20,22 @@ The server accepts a raw idea, then asynchronously:
 6. Builds bilingual markdown with front matter
 7. Commits to `content/ideas/` via GitHub API
 
-Two kinds of caller are admitted. The browser compose box on changkun.de/ideas
-sends an access token from [latere auth](https://auth.latere.ai), obtained by
-the hosted login SDK through browser PKCE; it is verified against the issuer's
-JWKS and then checked against `AUTH_ALLOWED_PRINCIPALS`, since a valid latere
-token only proves identity, not posting rights. The CLI sends a
-[changkun.de/x/login](https://login.changkun.de) token, verified as before.
+Both callers use the same credential: an access token from
+[latere auth](https://auth.latere.ai). The browser compose box on
+changkun.de/ideas obtains one through browser PKCE; the CLI reuses the one
+`latere login` already wrote to `~/.config/latere/auth-token.json`, renewing it
+through the refresh grant when it has expired. Either way the token is verified
+against the issuer's JWKS and then checked against `AUTH_ALLOWED_PRINCIPALS`,
+since a valid latere token only proves identity, not posting rights.
 
 ## Usage
 
 ### CLI
 
+Sign in once with the latere CLI, then run `idea`:
+
 ```bash
-export LOGIN_USER=<username>
-export LOGIN_PASS=<password>
+latere login
 
 # Interactive mode
 go run ./cmd/idea
@@ -99,7 +101,6 @@ Copy `.env.template` to `.env` and fill in the values:
 | `GIT_COMMITTER_NAME` | no | `Changkun Ideas API Server` | Git commit author name |
 | `GIT_COMMITTER_EMAIL` | no | `hi+ideas@changkun.de` | Git commit author email |
 | `IDEAS_ADDR` | no | `0.0.0.0:80` | Server listen address |
-| `LOGIN_VERIFY_URL` | no | `https://login.changkun.de/verify` | Login service verify endpoint |
 | `AUTH_ALLOWED_PRINCIPALS` | no | — | Comma-separated emails / principal ids allowed to post with a latere token. Empty disables latere auth |
 | `AUTH_URL` | no | `https://auth.latere.ai` | latere auth issuer |
 | `AUTH_JWKS_URL` | no | `$AUTH_URL/.well-known/jwks.json` | JWKS document used to verify latere tokens |
@@ -108,10 +109,9 @@ CLI-specific variables:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `LOGIN_USER` | yes | — | Login username |
-| `LOGIN_PASS` | yes | — | Login password |
 | `IDEAS_URL` | no | `https://api.changkun.de` | Ideas API base URL |
-| `LOGIN_URL` | no | `https://login.changkun.de` | Login service URL |
+| `AUTH_URL` | no | `https://auth.latere.ai` | latere auth issuer used to refresh the token |
+| `LATERE_AUTH_TOKEN_FILE` | no | `$XDG_CONFIG_HOME/latere/auth-token.json` | Token file written by `latere login` |
 
 Lux examples:
 
